@@ -5,12 +5,16 @@ import torch.nn.functional as F
 from torch.distributions import Normal
 from torch import distributions
 from torch.nn.parameter import Parameter
-
+import ipdb
 from sklearn import cluster, datasets, mixture
 from sklearn.preprocessing import StandardScaler
 from flows.flow_helpers import *
-from distributions.normal import EuclideanNormal
-
+from nflows.flows.base import Flow
+from nflows.distributions.normal import StandardNormal
+from nflows.transforms.base import CompositeTransform
+from nflows.transforms.autoregressive import MaskedAffineAutoregressiveTransform
+from nflows.transforms.permutations import ReversePermutation
+from nflows.flows import realnvp
 
 #Reference: https://github.com/ritheshkumar95/pytorch-normalizing-flows/blob/master/modules.py
 LOG_SIG_MAX = 2
@@ -23,6 +27,26 @@ def weights_init_(m):
     if classname.find('Linear') != -1:
         torch.nn.init.xavier_uniform_(m.weight, gain=1)
         torch.nn.init.constant_(m.bias, 0)
+
+def toy_flow(n_blocks, input_dim, hidden_dim, num_layers):
+    base_dist = StandardNormal(shape=[input_dim])
+    transforms = []
+    n_blocks = 1 # Not Used
+    for _ in range(num_layers):
+        transforms.append(ReversePermutation(features=input_dim))
+        transforms.append(MaskedAffineAutoregressiveTransform(features=input_dim,
+                                                              hidden_features=hidden_dim))
+    transform = CompositeTransform(transforms)
+
+    flow = Flow(transform, base_dist)
+    return flow
+
+def package_realnvp(n_blocks, input_dim, hidden_dim, num_layers):
+    flow = realnvp.SimpleRealNVP(features=input_dim,
+                                 hidden_features=hidden_dim,
+                                 num_layers=num_layers,
+                                 num_blocks_per_layer=n_blocks)
+    return flow
 
 # All code below this line is taken from
 # https://github.com/kamenbliznashki/normalizing_flows/blob/master/maf.py
@@ -59,7 +83,7 @@ class MAFRealNVP(nn.Module):
         # base distribution for calculation of log prob under the model
         self.register_buffer('base_dist_mean', torch.zeros(input_size))
         self.register_buffer('base_dist_var', torch.ones(input_size))
-        self.p_z = EuclideanNormal
+        self.p_z = StandardNormal
         self.radius = radius
 
         # construct model
@@ -82,8 +106,8 @@ class MAFRealNVP(nn.Module):
     def inverse(self, u, y=None):
         return self.net.inverse(u, y)
 
-    def log_prob(self, x, y=None):
-        u, sum_log_abs_det_jacobians = self.forward(x, y)
+    def log_prob(self, inputs, y=None):
+        u, sum_log_abs_det_jacobians = self.forward(inputs, y)
         return torch.sum(self.base_dist.log_prob(u) + sum_log_abs_det_jacobians, dim=1)
 
 ## Taken from: https://github.com/senya-ashukha/real-nvp-pytorch/blob/master/real-nvp-pytorch.ipynb
@@ -98,8 +122,8 @@ class RealNVP(nn.Module):
         self.layer_type = layer_type
         self.dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         i_mask = 1 - mask
-        mask = torch.stack([mask,i_mask]).repeat(int(n_blocks/2),1)
-        self.p_z = EuclideanNormal
+        mask = torch.stack([mask,i_mask]).repeat(int(n_blocks/2) + 1, 1)
+        self.p_z = StandardNormal
         self.s, self.t = create_real_nvp_blocks(input_size, hidden_size,
                                                 n_blocks, n_hidden, layer_type)
         # base distribution for calculation of log prob under the model
@@ -135,10 +159,9 @@ class RealNVP(nn.Module):
             log_det_J -= ((1-self.mask[i])*s).sum(dim=1)
         return z, log_det_J
 
-    def log_prob(self, x, edge_index=None):
-        z, logp = self.forward(x, edge_index)
-        p_z = self.p_z(torch.zeros_like(x, device=self.dev),
-                         torch.ones_like(x))
+    def log_prob(self, inputs, edge_index=None):
+        z, logp = self.forward(inputs, edge_index)
+        p_z = self.p_z([inputs.shape[-1]])
         return p_z.log_prob(z) + logp
 
     def sample(self, batchSize):

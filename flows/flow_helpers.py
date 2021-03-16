@@ -6,8 +6,6 @@ import torchvision.transforms as T
 import torch.nn.init as init
 from torch_geometric.nn import GCNConv, GATConv
 
-from utils.math_ops import expand_proj_dims, logsinh
-from utils.hyperbolics import parallel_transport_mu0,inverse_sample_projection_mu0,exp_map, inverse_exp_map, lorentz_norm,inverse_exp_map_mu0, exp_map_mu0
 from utils.utils import MultiInputSequential
 import math
 import os
@@ -223,45 +221,3 @@ class BatchNorm(nn.Module):
         log_abs_det_jacobian = 0.5 * torch.log(var + self.eps) - self.log_gamma
 
         return x, log_abs_det_jacobian.expand_as(x)
-
-class HyperbolicLinear(nn.Module):
-    """
-    Hyperbolic neural networks layer:
-    Source: https://github.com/HazyResearch/hgcn/blob/master/layers/hyp_layers.py
-    """
-    def __init__(self, in_features, out_features, radius, use_bias=False):
-        super(HyperbolicLinear, self).__init__()
-        self.weight = nn.Parameter(torch.Tensor(out_features, in_features))
-        self.bias = nn.Parameter(torch.Tensor(out_features))
-        self.radius = radius
-        self.use_bias = use_bias
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        init.xavier_uniform_(self.weight, gain=math.sqrt(2))
-        init.constant_(self.bias, 0)
-
-    def hyper_act(self, x):
-        '''
-        Op: \sigma(x)
-        Input:
-        x: A Hyperbolic Vector in H^n
-
-        Output:
-        sigma_x_mu0: A Hyperbolic Vector in H^n after \sigma(x)
-        '''
-        x_tangent_mu0 = inverse_exp_map_mu0(x, self.radius)
-        sigma_x = F.relu(x_tangent_mu0)
-        sigma_x_mu0 = exp_map_mu0(sigma_x, self.radius)
-        return sigma_x_mu0
-
-    def forward(self, x):
-        x_tangent_mu0 = inverse_exp_map_mu0(x, self.radius)
-        output = exp_map_mu0(x_tangent_mu0.matmul(self.weight.t()), self.radius)
-        if self.use_bias:
-            output = parallel_transport_mu0(self.bias, output, self.radius)
-            output = exp_map(output, x)
-        ret = output
-        h = self.hyper_act(ret)
-        return h
-

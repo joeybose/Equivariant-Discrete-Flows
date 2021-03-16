@@ -11,10 +11,12 @@ import time
 import argparse
 import pprint
 from functools import partial
+import ipdb
 
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from matplotlib import cm
 from tqdm import tqdm
 from utils import utils
 from utils.utils import seed_everything, str2bool
@@ -24,6 +26,7 @@ from nflows.transforms.base import CompositeTransform
 from nflows.transforms.autoregressive import MaskedAffineAutoregressiveTransform
 from nflows.transforms.permutations import ReversePermutation
 from data import create_dataset
+from flows import create_flow
 
 
 def train_flow(args, flow, optim, data=None):
@@ -47,27 +50,18 @@ def train_flow(args, flow, optim, data=None):
             with torch.no_grad():
                 zgrid = flow.log_prob(xyinput).exp().reshape(100, 100)
 
-            plt.contourf(xgrid.numpy(), ygrid.numpy(), zgrid.cpu().numpy())
+            plt.contourf(xgrid.numpy(), ygrid.numpy(), zgrid.cpu().numpy(), cmap=cm.magma)
             plt.title('iteration {}'.format(i + 1))
             plt.show()
             plt.savefig('figures/{}_{}.png'.format(args.plot_name, str(i+1)))
 
 
 def main(args):
-    # Define an invertible transformation.
-    base_dist = StandardNormal(shape=[2])
     data = None
-    transforms = []
-    for _ in range(args.num_layers):
-        transforms.append(ReversePermutation(features=2))
-        transforms.append(MaskedAffineAutoregressiveTransform(features=2,
-                                                              hidden_features=args.hidden_dim))
-    transform = CompositeTransform(transforms)
-
-    flow = Flow(transform, base_dist).to(args.dev)
-    optimizer = optim.Adam(flow.parameters())
     if args.dataset is not None:
         data = create_dataset(args, args.dataset).to(args.dev)
+    flow = create_flow(args, args.model_type)
+    optimizer = optim.Adam(flow.parameters())
     train_flow(args, flow, optimizer, data)
 
 
@@ -80,12 +74,14 @@ if __name__ == '__main__':
     parser.add_argument('--seed', type=int, default=0, help='Random seed.')
     parser.add_argument('--plot_name', type=str, default='test')
     # target density
+    parser.add_argument('--model_type', type=str, default="Toy", help='Which Flow to use.')
     parser.add_argument('--dataset', type=str, default=None, help='Which potential function to approximate.')
     parser.add_argument('--nsamples', type=int, default=500, help='Number of Samples to Use')
     # model parameters
     parser.add_argument('--data_dim', type=int, default=2, help='Dimension of the data.')
     parser.add_argument('--hidden_dim', type=int, default=32, help='Dimensions of hidden layers.')
     parser.add_argument('--num_layers', type=int, default=5, help='Number of hidden layers.')
+    parser.add_argument('--n_blocks', type=int, default=2, help='Number of blocks.')
     # training parameters
     parser.add_argument('--log_interval', type=int, default=500, help='How often to save model and samples.')
 

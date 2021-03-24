@@ -14,13 +14,72 @@ import argparse
 import pprint
 import numpy as np
 import copy
+import flows.layers.base as base_layers
+import flows.layers as layers
 
-
+from e2cnn import gspaces
+from e2cnn import nn as enn
 # --------------------
 # Model layers and helpers
 # --------------------
 
 kwargs_layer = {'Linear': nn.Linear, 'GCN': GCNConv, 'GAT': GATConv}
+
+def parse_vnorms(args):
+    ps = []
+    for p in args.vnorms:
+        if p == 'f':
+            ps.append(float('inf'))
+        else:
+            ps.append(float(p))
+    return ps[:-1], ps[1:]
+
+def build_nnet(args, dims, activation_fn=torch.nn.ReLU):
+    nnet = []
+    domains, codomains = parse_vnorms(args)
+    if args.learn_p:
+        if args.mixed:
+            domains = [torch.nn.Parameter(torch.tensor(0.)) for _ in domains]
+        else:
+            domains = [torch.nn.Parameter(torch.tensor(0.))] * len(domains)
+        codomains = domains[1:] + [domains[0]]
+    for i, (in_dim, out_dim, domain, codomain) in enumerate(zip(dims[:-1], dims[1:], domains, codomains)):
+        nnet.append(activation_fn())
+        nnet.append(
+            base_layers.get_linear(
+                in_dim,
+                out_dim,
+                coeff=args.coeff,
+                n_iterations=args.n_lipschitz_iters,
+                atol=args.atol,
+                rtol=args.rtol,
+                domain=domain,
+                codomain=codomain,
+                zero_init=(out_dim == 2),
+            )
+        )
+    return torch.nn.Sequential(*nnet)
+
+def update_lipschitz(model, n_iterations):
+    for m in model.modules():
+        if isinstance(m, base_layers.SpectralNormConv2d) or isinstance(m, base_layers.SpectralNormLinear):
+            m.compute_weight(update=True, n_iterations=n_iterations)
+        if isinstance(m, base_layers.InducedNormConv2d) or isinstance(m, base_layers.InducedNormLinear):
+            m.compute_weight(update=True, n_iterations=n_iterations)
+
+def get_ords(model):
+    ords = []
+    for m in model.modules():
+        if isinstance(m, base_layers.InducedNormConv2d) or isinstance(m, base_layers.InducedNormLinear):
+            domain, codomain = m.compute_domain_codomain()
+            if torch.is_tensor(domain):
+                domain = domain.item()
+            if torch.is_tensor(codomain):
+                codomain = codomain.item()
+            ords.append(domain)
+            ords.append(codomain)
+    return ords
+
 
 def create_real_nvp_blocks(input_size, hidden_size, n_blocks, n_hidden,
                           layer_type='Linear'):
@@ -46,26 +105,62 @@ def create_real_nvp_blocks(input_size, hidden_size, n_blocks, n_hidden,
     t = nett = MultiInputSequential(*nett)
     return s,t
 
-def create_wrapped_real_nvp_blocks(input_size, hidden_size, n_blocks, n_hidden,
-                          layer_type='Linear'):
-    nets, nett = [], []
-    # Build the Flow Block by Block
-    if layer_type == 'GCN':
-        GCNConv.cached = False
-    elif layer_type == 'GAT':
-        GATConv.heads = 8
 
-    t_outsize = int(np.ceil(input_size/2))
+def create_equivariant_real_nvp_blocks(input_size, hidden_size, n_blocks,
+                                       n_hidden, group_action_type,
+                                       kernel_size=3, padding=1):
+    nets, nett = [], []
+    # the model is equivariant under rotations by 45 degrees, modelled by C8
+
+    # the input image is a scalar field, corresponding to the trivial representation
+    in_type = enn.FieldType(group_action_type, [group_action_type.trivial_repr])
+
+    # we store the input type for wrapping the images into a geometric tensor during the forward pass
+    input_type = in_type
+
+    out_type = enn.FieldType(group_action_type, [group_action_type.trivial_repr])
     for i in range(n_blocks):
-        block_nets = [kwargs_layer[layer_type](input_size, hidden_size)]
-        block_nett = [kwargs_layer[layer_type](input_size, hidden_size)]
+        s_block = [enn.SequentialModule(
+            enn.R2Conv(in_type, out_type, kernel_size=kernel_size,
+                       padding=padding, bias=True),
+            enn.InnerBatchNorm(out_type),
+            enn.ELU(out_type, inplace=True)
+        )]
+        t_block = [enn.SequentialModule(
+            enn.R2Conv(in_type, out_type, kernel_size=kernel_size,
+                       padding=padding, bias=True),
+            enn.InnerBatchNorm(out_type),
+            enn.ELU(out_type, inplace=True)
+        )]
+        inter_block_out_type = enn.FieldType(group_action_type, hidden_size*[group_action_type.regular_repr])
         for _ in range(n_hidden):
-            block_nets += [nn.Tanh(), kwargs_layer[layer_type](hidden_size, hidden_size)]
-            block_nett += [nn.Tanh(), kwargs_layer[layer_type](hidden_size, hidden_size)]
-        block_nets += [nn.Tanh(), kwargs_layer[layer_type](hidden_size, input_size)]
-        block_nett += [nn.Tanh(), kwargs_layer[layer_type](hidden_size, t_outsize)]
-        nets +=[MultiInputSequential(*block_nets)]
-        nett +=[MultiInputSequential(*block_nett)]
+            s_block += [enn.SequentialModule(
+                enn.R2Conv(s_block[-1].out_type, inter_block_out_type,
+                           kernel_size=kernel_size, padding=padding, bias=True),
+                enn.InnerBatchNorm(inter_block_out_type),
+                enn.ELU(inter_block_out_type, inplace=True)
+            )]
+            t_block += [enn.SequentialModule(
+                enn.R2Conv(t_block[-1].out_type, inter_block_out_type,
+                           kernel_size=kernel_size, padding=padding, bias=True),
+                enn.InnerBatchNorm(inter_block_out_type),
+                enn.ELU(inter_block_out_type, inplace=True)
+            )]
+
+        s_block += [enn.SequentialModule(
+            enn.R2Conv(s_block[-1].out_type, in_type, kernel_size=kernel_size,
+                       padding=padding, bias=True),
+            enn.InnerBatchNorm(out_type),
+            enn.ELU(out_type, inplace=True)
+        )]
+        t_block += [enn.SequentialModule(
+            enn.R2Conv(t_block[-1].out_type, in_type, kernel_size=kernel_size,
+                       padding=padding, bias=True),
+            enn.InnerBatchNorm(out_type),
+            enn.ELU(out_type, inplace=True)
+        )]
+        nets +=[MultiInputSequential(*s_block)]
+        nett +=[MultiInputSequential(*t_block)]
 
     s = nets = MultiInputSequential(*nets)
     t = nett = MultiInputSequential(*nett)

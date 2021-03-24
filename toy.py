@@ -20,13 +20,11 @@ from matplotlib import cm
 from tqdm import tqdm
 from utils import utils
 from utils.utils import seed_everything, str2bool
-from nflows.flows.base import Flow
-from nflows.distributions.normal import StandardNormal
-from nflows.transforms.base import CompositeTransform
-from nflows.transforms.autoregressive import MaskedAffineAutoregressiveTransform
-from nflows.transforms.permutations import ReversePermutation
 from data import create_dataset
 from flows import create_flow
+from flows.flow_helpers import update_lipschitz
+from e2cnn import gspaces
+from e2cnn import nn as enn
 
 
 def train_flow(args, flow, optim, data=None):
@@ -37,8 +35,19 @@ def train_flow(args, flow, optim, data=None):
             data = torch.tensor(data, dtype=torch.float32).to(args.dev)
         optim.zero_grad()
         loss = -flow.log_prob(inputs=data).mean()
+        r2_act = gspaces.Rot2dOnR2(N=8)
+        # ipdb.set_trace()
+        # input_type = enn.FieldType(r2_act, [r2_act.trivial_repr])
+        # data = enn.GeometricTensor(data.view(-1, 1, 1, 2).cpu(), input_type)
+        # for g in r2_act.testing_elements:
+            # x_transformed = data.transform(g).tensor.squeeze().cuda()
+            # y_from_x_transformed = -flow.log_prob(inputs=x_transformed)
+
         loss.backward()
         optim.step()
+
+        if args.model_type == 'toy_iresnet':
+            update_lipschitz(flow.flow_model, args.n_lipschitz_iters)
         if (i + 1) % args.log_interval == 0 and args.plot:
             print("Log Likelihood at %d is %f" %(i+1, loss))
             xline = torch.linspace(-3, 3, steps=100)
@@ -65,7 +74,6 @@ def main(args):
     train_flow(args, flow, optimizer, data)
 
 
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # boiler plate inits
@@ -80,10 +88,27 @@ if __name__ == '__main__':
     # model parameters
     parser.add_argument('--data_dim', type=int, default=2, help='Dimension of the data.')
     parser.add_argument('--hidden_dim', type=int, default=32, help='Dimensions of hidden layers.')
-    parser.add_argument('--num_layers', type=int, default=5, help='Number of hidden layers.')
-    parser.add_argument('--n_blocks', type=int, default=2, help='Number of blocks.')
+    parser.add_argument('--num_layers', type=int, default=1, help='Number of hidden layers.')
+    parser.add_argument('--n_blocks', type=int, default=1, help='Number of blocks.')
+    # i-Resnet params
+    parser.add_argument('--coeff', type=float, default=0.9)
+    parser.add_argument('--vnorms', type=str, default='222222')
+    parser.add_argument('--n-lipschitz-iters', type=int, default=5)
+    parser.add_argument('--atol', type=float, default=None)
+    parser.add_argument('--rtol', type=float, default=None)
+    parser.add_argument('--learn-p', type=eval, choices=[True, False], default=False)
+    parser.add_argument('--mixed', type=eval, choices=[True, False], default=True)
+
+    parser.add_argument('--dims', type=str, default='128-128-128-128')
+    parser.add_argument('--act', type=str, default='swish')
+    parser.add_argument('--brute-force', type=eval, choices=[True, False], default=False)
+    parser.add_argument('--actnorm', type=eval, choices=[True, False], default=False)
+    parser.add_argument('--batchnorm', type=eval, choices=[True, False], default=False)
+    parser.add_argument('--exact-trace', type=eval, choices=[True, False], default=False)
+    parser.add_argument('--n-power-series', type=int, default=None)
+    parser.add_argument('--n-dist', choices=['geometric', 'poisson'], default='geometric')
     # training parameters
-    parser.add_argument('--log_interval', type=int, default=500, help='How often to save model and samples.')
+    parser.add_argument('--log_interval', type=int, default=10, help='How often to save model and samples.')
 
     args = parser.parse_args()
 

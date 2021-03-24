@@ -9,12 +9,27 @@ import ipdb
 from sklearn import cluster, datasets, mixture
 from sklearn.preprocessing import StandardScaler
 from flows.flow_helpers import *
+
 from nflows.flows.base import Flow
 from nflows.distributions.normal import StandardNormal
 from nflows.transforms.base import CompositeTransform
 from nflows.transforms.autoregressive import MaskedAffineAutoregressiveTransform
 from nflows.transforms.permutations import ReversePermutation
 from nflows.flows import realnvp
+
+import flows.layers.base as base_layers
+import flows.layers as layers
+
+ACTIVATION_FNS = {
+    'relu': torch.nn.ReLU,
+    'tanh': torch.nn.Tanh,
+    'elu': torch.nn.ELU,
+    'selu': torch.nn.SELU,
+    'fullsort': base_layers.FullSort,
+    'maxmin': base_layers.MaxMin,
+    'swish': base_layers.Swish,
+    'lcube': base_layers.LipschitzCube,
+}
 
 #Reference: https://github.com/ritheshkumar95/pytorch-normalizing-flows/blob/master/modules.py
 LOG_SIG_MAX = 2
@@ -28,10 +43,9 @@ def weights_init_(m):
         torch.nn.init.xavier_uniform_(m.weight, gain=1)
         torch.nn.init.constant_(m.bias, 0)
 
-def toy_flow(n_blocks, input_dim, hidden_dim, num_layers):
+def toy_flow(args, n_blocks, input_dim, hidden_dim, num_layers):
     base_dist = StandardNormal(shape=[input_dim])
     transforms = []
-    n_blocks = 1 # Not Used
     for _ in range(num_layers):
         transforms.append(ReversePermutation(features=input_dim))
         transforms.append(MaskedAffineAutoregressiveTransform(features=input_dim,
@@ -41,15 +55,55 @@ def toy_flow(n_blocks, input_dim, hidden_dim, num_layers):
     flow = Flow(transform, base_dist)
     return flow
 
-def package_realnvp(n_blocks, input_dim, hidden_dim, num_layers):
+def package_realnvp(args, n_blocks, input_dim, hidden_dim, num_layers):
     flow = realnvp.SimpleRealNVP(features=input_dim,
                                  hidden_features=hidden_dim,
                                  num_layers=num_layers,
                                  num_blocks_per_layer=n_blocks)
     return flow
 
+class Toy_i_resnet(nn.Module):
+    def __init__(self, args, n_blocks, input_size, hidden_size, n_hidden):
+        super(Toy_i_resnet, self).__init__()
+        self.n_blocks = n_blocks
+        self.n_hidden = n_hidden
+        self.dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.p_z = StandardNormal
+        dims = [2] + list(map(int, args.dims.split('-'))) + [2]
+        activation_fn = ACTIVATION_FNS[args.act]
+        blocks = []
+        if args.actnorm: blocks.append(layers.ActNorm1d(2))
+        for _ in range(n_blocks):
+            blocks.append(
+                layers.iResBlock(
+                    build_nnet(args, dims, activation_fn),
+                    n_dist=args.n_dist,
+                    n_power_series=args.n_power_series,
+                    exact_trace=args.exact_trace,
+                    brute_force=args.brute_force,
+                    n_samples=args.nsamples,
+                    neumann_grad=True,
+                    grad_in_forward=False,
+                )
+            )
+            if args.actnorm: blocks.append(layers.ActNorm1d(2))
+            if args.batchnorm: blocks.append(layers.MovingBatchNorm1d(2))
+        self.flow_model = layers.SequentialFlow(blocks)
+
+    def forward(self, x):
+        zero = torch.zeros(x.shape[0], 1).to(x)
+        z, delta_logp = self.flow_model(x, zero)
+        return z, delta_logp
+
+    def log_prob(self, inputs):
+        z, delta_logp = self.forward(inputs)
+        p_z = self.p_z([inputs.shape[-1]])
+        return p_z.log_prob(z) - delta_logp.squeeze()
+
+
 # All code below this line is taken from
 # https://github.com/kamenbliznashki/normalizing_flows/blob/master/maf.py
+## Taken from: https://github.com/senya-ashukha/real-nvp-pytorch/blob/master/real-nvp-pytorch.ipynb
 
 class FlowSequential(nn.Sequential):
     """ Container for layers of a normalizing flow """
@@ -76,7 +130,7 @@ class FlowSequential(nn.Sequential):
 # --------------------
 
 class MAFRealNVP(nn.Module):
-    def __init__(self, n_blocks, input_size, hidden_size, n_hidden,
+    def __init__(self, args, n_blocks, input_size, hidden_size, n_hidden,
                  radius=torch.Tensor([0]), cond_label_size=None, batch_norm=False):
         super().__init__()
 
@@ -112,7 +166,7 @@ class MAFRealNVP(nn.Module):
 
 ## Taken from: https://github.com/senya-ashukha/real-nvp-pytorch/blob/master/real-nvp-pytorch.ipynb
 class RealNVP(nn.Module):
-    def __init__(self, n_blocks, input_size, hidden_size, n_hidden,
+    def __init__(self, args, n_blocks, input_size, hidden_size, n_hidden,
                  layer_type='Linear', radius=torch.Tensor([0])):
         super(RealNVP, self).__init__()
         mask = torch.arange(input_size).float() % 2
@@ -126,6 +180,7 @@ class RealNVP(nn.Module):
         self.p_z = StandardNormal
         self.s, self.t = create_real_nvp_blocks(input_size, hidden_size,
                                                 n_blocks, n_hidden, layer_type)
+        ipdb.set_trace()
         # base distribution for calculation of log prob under the model
         self.register_buffer('base_dist_mean', torch.zeros(input_size))
         self.register_buffer('base_dist_var', torch.ones(input_size))
@@ -133,6 +188,7 @@ class RealNVP(nn.Module):
 
     def inverse(self, z, edge_index=None):
         log_det_J, x = z.new_zeros(z.shape[0]), z
+        ipdb.set_trace()
         for i in range(0,self.n_blocks):
             x_ = x*self.mask[i]
             if self.layer_type != 'Linear':

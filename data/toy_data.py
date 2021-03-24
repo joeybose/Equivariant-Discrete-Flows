@@ -3,14 +3,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributions as D
 from torch.utils.data import DataLoader, TensorDataset
-
+import sklearn.datasets
 import math
 import os
 import time
 import argparse
 import pprint
 from functools import partial
-
+import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -64,6 +64,26 @@ def sample_2d_data(dataset, n_samples):
                        torch.stack([-d1x, -d1y], dim=1)], dim=0) / 3
         return x + 0.1*z
 
+    elif dataset == "pinwheel":
+        radial_std = 0.3
+        tangential_std = 0.1
+        num_classes = 5
+        num_per_class = n_samples // 5
+        rate = 0.25
+        rads = np.linspace(0, 2 * np.pi, num_classes, endpoint=False)
+
+        features = rng.randn(num_classes*num_per_class, 2) \
+            * np.array([radial_std, tangential_std])
+        features[:, 0] += 1.
+        labels = np.repeat(np.arange(num_classes), num_per_class)
+
+        angles = rads[labels] + rate * np.exp(features[:, 0])
+        rotations = np.stack([np.cos(angles), -np.sin(angles), np.sin(angles), np.cos(angles)])
+        rotations = np.reshape(rotations.T, (-1, 2, 2))
+
+        data = 2 * rng.permutation(np.einsum("ti,tij->tj", features, rotations))
+        return torch.from_numpy(data)
+
     elif dataset == 'checkerboard':
         x1 = torch.rand(n_samples) * 4 - 2
         x2_ = torch.rand(n_samples) - torch.randint(0, 2, (n_samples,), dtype=torch.float) * 2
@@ -94,9 +114,52 @@ def sample_2d_data(dataset, n_samples):
 
         # random sample
         x = x[torch.randint(0, n_samples, size=(n_samples,))]
-
         # Add noise
         return x + torch.normal(mean=torch.zeros_like(x), std=0.08*torch.ones_like(x))
+
+    elif dataset == 'swissroll':
+        data = sklearn.datasets.make_swiss_roll(n_samples=n_samples, noise=1.0)[0]
+        data = data.astype("float32")[:, [0, 2]]
+        data /= 5
+        data = torch.from_numpy(data)
+        return data
+
+    elif dataset == "circles":
+        data = sklearn.datasets.make_circles(n_samples=n_samples, factor=.5, noise=0.08)[0]
+        data = data.astype("float32")
+        data *= 3
+        data = torch.from_numpy(data)
+        return data
+
+    elif dataset == "pinwheel":
+        radial_std = 0.3
+        tangential_std = 0.1
+        num_classes = 5
+        num_per_class = n_samples // 5
+        rate = 0.25
+        rads = np.linspace(0, 2 * np.pi, num_classes, endpoint=False)
+
+        features = rng.randn(num_classes*num_per_class, 2) \
+            * np.array([radial_std, tangential_std])
+        features[:, 0] += 1.
+        labels = np.repeat(np.arange(num_classes), num_per_class)
+
+        angles = rads[labels] + rate * np.exp(features[:, 0])
+        rotations = np.stack([np.cos(angles), -np.sin(angles), np.sin(angles), np.cos(angles)])
+        rotations = np.reshape(rotations.T, (-1, 2, 2))
+
+        data = 2 * rng.permutation(np.einsum("ti,tij->tj", features, rotations))
+        return torch.from_numpy(data)
+
+    elif dataset == "line":
+        x = rng.rand(n_samples) * 5 - 2.5
+        y = x
+        return np.stack((x, y), 1)
+
+    elif dataset == "cos":
+        x = rng.rand(n_samples) * 5 - 2.5
+        y = np.sin(x) * 2.5
+        return np.stack((x, y), 1)
 
     else:
         raise RuntimeError('Invalid `dataset` to sample from.')

@@ -11,9 +11,62 @@ from statistics import median, mean
 import random
 import numpy as np
 import copy
+import logging
 from torch._six import inf
 import torch.nn as nn
+from e2cnn import gspaces
+from e2cnn import nn as enn
+import ipdb
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from matplotlib import cm
 
+LOW = -4
+HIGH = 4
+
+def check_equivariance(r2_act, out_type, data, func, data_type=None):
+    input_type = enn.FieldType(r2_act, [r2_act.trivial_repr])
+    if data_type == 'GeomTensor':
+        data = enn.GeometricTensor(data.view(-1, 1, 1, 2), input_type)
+    for g in r2_act.testing_elements:
+        ipdb.set_trace()
+        output = func(data)
+        if data_type == 'GeomTensor':
+            rg_output = enn.GeometricTensor(output.tensor.view(-1,1,1,2).cpu(),
+                                         out_type).transform(g)
+            data = enn.GeometricTensor(data.tensor.view(-1, 1, 1, 2).cpu(), input_type)
+            x_transformed = enn.GeometricTensor(data.transform(g).tensor.cuda().view(-1,1,1,2),
+                                                input_type)
+        else:
+            rg_output = enn.GeometricTensor(output.view(-1,1,1,2).cpu(),
+                                            out_type).transform(g)
+            data = enn.GeometricTensor(data.view(-1, 1, 1, 2).cpu(), input_type)
+            x_transformed = data.transform(g).tensor.cuda().view(-1,1,1,2)
+
+        output_rg = func(x_transformed)
+        # Equivariance Condition
+        if data_type == 'GeomTensor':
+            output_rg = enn.GeometricTensor(output_rg.tensor.cpu(), out_type)
+            data = enn.GeometricTensor(data.tensor.squeeze().cuda().view(-1,1,1,2),input_type)
+        else:
+            output_rg = enn.GeometricTensor(output_rg.view(-1,1,1,2).cpu(), out_type)
+            data = data.tensor.squeeze().cuda()
+        assert torch.allclose(rg_output.tensor.cpu().squeeze(), output_rg.tensor.squeeze(), atol=1e-5), g
+
+def check_invariance(r2_act, out_type, data, func):
+    input_type = enn.FieldType(r2_act, [r2_act.trivial_repr])
+    ipdb.set_trace()
+    data = enn.GeometricTensor(data.view(-1, 1, 1, 2), input_type)
+    for g in r2_act.testing_elements:
+        log_prob = func(data)
+        data = enn.GeometricTensor(data.tensor.view(-1, 1, 1, 2).cpu(), input_type)
+        x_transformed = enn.GeometricTensor(data.transform(g).tensor.cuda().view(-1,1,1,2),
+                                            input_type)
+        invar_new_log_prob = func(x_transformed)
+        data = enn.GeometricTensor(data.tensor.squeeze().cuda().view(-1,1,1,2),input_type)
+        assert torch.allclose(log_prob.tensor.cpu().squeeze(),
+                              equivar_log_prob.tensor.squeeze(), atol=1e-5), g
 
 class MultiInputSequential(nn.Sequential):
     def forward(self, *input):
@@ -209,9 +262,9 @@ class EarlyStopping:
 
 def project_name(dataset_name):
     if dataset_name:
-        return "floss-{}".format(dataset_name)
+        return "Equivar-Flows-{}".format(dataset_name)
     else:
-        return "floss"
+        return "Equivar-Flows"
 
 
 class Constants(object):
@@ -223,3 +276,163 @@ class Constants(object):
     logfloorc = -104             # smallest cuda v s.t. exp(v) > 0
     invsqrt2pi = 1. / math.sqrt(2 * math.pi)
     sqrthalfpi = math.sqrt(math.pi/2)
+
+def plt_potential_func(potential, ax, npts=100, title="$p(x)$"):
+    """
+    Args:
+        potential: computes U(z_k) given z_k
+    """
+    xside = np.linspace(LOW, HIGH, npts)
+    yside = np.linspace(LOW, HIGH, npts)
+    xx, yy = np.meshgrid(xside, yside)
+    z = np.hstack([xx.reshape(-1, 1), yy.reshape(-1, 1)])
+
+    z = torch.Tensor(z)
+    u = potential(z).cpu().numpy()
+    p = np.exp(-u).reshape(npts, npts)
+
+    plt.pcolormesh(xx, yy, p)
+    ax.invert_yaxis()
+    ax.get_xaxis().set_ticks([])
+    ax.get_yaxis().set_ticks([])
+    ax.set_title(title)
+
+
+def plt_flow(prior_logdensity, transform, ax, npts=100, title="$q(x)$", device="cpu"):
+    """
+    Args:
+        transform: computes z_k and log(q_k) given z_0
+    """
+    side = np.linspace(LOW, HIGH, npts)
+    xx, yy = np.meshgrid(side, side)
+    z = np.hstack([xx.reshape(-1, 1), yy.reshape(-1, 1)])
+
+    z = torch.tensor(z, requires_grad=True).type(torch.float32).to(device)
+    logqz = prior_logdensity(z)
+    logqz = torch.sum(logqz, dim=1)[:, None]
+    z, logqz = transform(z, logqz)
+    logqz = torch.sum(logqz, dim=1)[:, None]
+
+    xx = z[:, 0].cpu().numpy().reshape(npts, npts)
+    yy = z[:, 1].cpu().numpy().reshape(npts, npts)
+    qz = np.exp(logqz.cpu().numpy()).reshape(npts, npts)
+
+    plt.pcolormesh(xx, yy, qz)
+    ax.set_xlim(LOW, HIGH)
+    ax.set_ylim(LOW, HIGH)
+    cmap = matplotlib.cm.get_cmap(None)
+    ax.set_facecolor(cmap(0.))
+    ax.invert_yaxis()
+    ax.get_xaxis().set_ticks([])
+    ax.get_yaxis().set_ticks([])
+    ax.set_title(title)
+
+
+def plt_flow_density(prior_logdensity, inverse_transform, ax, npts=100, memory=100, title="$q(x)$", device="cpu"):
+    side = np.linspace(LOW, HIGH, npts)
+    xx, yy = np.meshgrid(side, side)
+    x = np.hstack([xx.reshape(-1, 1), yy.reshape(-1, 1)])
+
+    x = torch.from_numpy(x).type(torch.float32).to(device)
+    zeros = torch.zeros(x.shape[0], 1).to(x)
+
+    z, delta_logp = [], []
+    inds = torch.arange(0, x.shape[0]).to(torch.int64)
+    for ii in torch.split(inds, int(memory**2)):
+        z_, delta_logp_ = inverse_transform(x[ii], zeros[ii])
+        z.append(z_)
+        delta_logp.append(delta_logp_)
+    z = torch.cat(z, 0)
+    delta_logp = torch.cat(delta_logp, 0)
+
+    logpz = prior_logdensity(z).view(z.shape[0], -1).sum(1, keepdim=True)  # logp(z)
+    logpx = logpz - delta_logp
+
+    px = np.exp(logpx.cpu().numpy()).reshape(npts, npts)
+
+    ax.imshow(px, cmap=cm.magma)
+    ax.get_xaxis().set_ticks([])
+    ax.get_yaxis().set_ticks([])
+    ax.set_title(title)
+
+
+def plt_flow_samples(prior_sample, transform, ax, npts=100, memory=100, title="$x ~ q(x)$", device="cpu"):
+    z = prior_sample(npts * npts, 2).type(torch.float32).to(device)
+    zk = []
+    inds = torch.arange(0, z.shape[0]).to(torch.int64)
+    for ii in torch.split(inds, int(memory**2)):
+        zk.append(transform(z[ii]))
+    zk = torch.cat(zk, 0).cpu().numpy()
+    ax.hist2d(zk[:, 0], zk[:, 1], range=[[LOW, HIGH], [LOW, HIGH]], bins=npts, cmap=cm.magma)
+    ax.invert_yaxis()
+    ax.get_xaxis().set_ticks([])
+    ax.get_yaxis().set_ticks([])
+    ax.set_title(title)
+
+
+def plt_samples(samples, ax, npts=100, title="$x ~ p(x)$"):
+    ax.hist2d(samples[:, 0], samples[:, 1], range=[[LOW, HIGH], [LOW, HIGH]], bins=npts, cmap=cm.magma)
+    ax.invert_yaxis()
+    ax.get_xaxis().set_ticks([])
+    ax.get_yaxis().set_ticks([])
+    ax.set_title(title)
+
+
+def visualize_transform(
+    potential_or_samples, prior_sample, prior_density, transform=None, inverse_transform=None, samples=False, npts=100,
+    memory=100, device="cpu"
+):
+    """Produces visualization for the model density and samples from the model."""
+    plt.clf()
+    ax = plt.subplot(1, 3, 1, aspect="equal")
+    if samples:
+        plt_samples(potential_or_samples, ax, npts=npts)
+    else:
+        plt_potential_func(potential_or_samples, ax, npts=npts)
+
+    ax = plt.subplot(1, 3, 2, aspect="equal")
+    if inverse_transform is None:
+        plt_flow(prior_density, transform, ax, npts=npts, device=device)
+    else:
+        plt_flow_density(prior_density, inverse_transform, ax, npts=npts, memory=memory, device=device)
+
+    ax = plt.subplot(1, 3, 3, aspect="equal")
+    if transform is not None:
+        plt_flow_samples(prior_sample, transform, ax, npts=npts, memory=memory, device=device)
+
+class AverageMeter(object):
+    """Computes and stores the average and current value"""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.val = 0
+        self.avg = 0
+        self.sum = 0
+        self.count = 0
+
+    def update(self, val, n=1):
+        self.val = val
+        self.sum += val * n
+        self.count += n
+        self.avg = self.sum / self.count
+
+
+class RunningAverageMeter(object):
+    """Computes and stores the average and current value"""
+
+    def __init__(self, momentum=0.99):
+        self.momentum = momentum
+        self.reset()
+
+    def reset(self):
+        self.val = None
+        self.avg = 0
+
+    def update(self, val):
+        if self.val is None:
+            self.avg = val
+        else:
+            self.avg = self.avg * self.momentum + val * (1 - self.momentum)
+        self.val = val

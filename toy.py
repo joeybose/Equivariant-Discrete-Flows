@@ -19,59 +19,81 @@ import matplotlib.pyplot as plt
 from matplotlib import cm
 from tqdm import tqdm
 from utils import utils
-from utils.utils import seed_everything, str2bool
+from utils.utils import seed_everything, str2bool, visualize_transform
 from data import create_dataset
+from data.toy_data import sample_2d_data
 from flows import create_flow
-from flows.flow_helpers import update_lipschitz
 from e2cnn import gspaces
 from e2cnn import nn as enn
 
-
-def train_flow(args, flow, optim, data=None):
-    num_iter = 5000
-    for i in range(num_iter):
-        if data is None:
+def train_flow(args, flow, optim):
+    # if args.dataset is None:
+        # data, y = datasets.make_moons(128, noise=.1)
+        # data = torch.tensor(data, dtype=torch.float32).to(args.dev)
+    # else:
+        # data = create_dataset(args, args.dataset).to(args.dev)
+    time_meter = utils.RunningAverageMeter(0.93)
+    loss_meter = utils.RunningAverageMeter(0.93)
+    logpz_meter = utils.RunningAverageMeter(0.93)
+    delta_logp_meter = utils.RunningAverageMeter(0.93)
+    end = time.time()
+    flow.train()
+    for i in range(args.num_iters):
+        if args.dataset is None:
             data, y = datasets.make_moons(128, noise=.1)
             data = torch.tensor(data, dtype=torch.float32).to(args.dev)
+        else:
+            data = create_dataset(args, args.dataset)
+            data = torch.from_numpy(data).type(torch.float32).to(args.dev)
         optim.zero_grad()
-        loss = -flow.log_prob(inputs=data).mean()
-        r2_act = gspaces.Rot2dOnR2(N=8)
-        # ipdb.set_trace()
-        # input_type = enn.FieldType(r2_act, [r2_act.trivial_repr])
-        # data = enn.GeometricTensor(data.view(-1, 1, 1, 2).cpu(), input_type)
-        # for g in r2_act.testing_elements:
-            # x_transformed = data.transform(g).tensor.squeeze().cuda()
-            # y_from_x_transformed = -flow.log_prob(inputs=x_transformed)
+        beta = min(1, itr / args.annealing_iters) if args.annealing_iters > 0 else 1.
+        loss, logpz, delta_logp = flow.log_prob(inputs=data)
+        # loss = -flow.log_prob(inputs=data).mean()
+        loss_meter.update(loss.item())
+        logpz_meter.update(logpz.item())
+        delta_logp_meter.update(delta_logp.item())
 
         loss.backward()
         optim.step()
 
-        if args.model_type == 'toy_iresnet':
-            update_lipschitz(flow.flow_model, args.n_lipschitz_iters)
+        if args.model_type == 'toy_resflow':
+            flow.beta = beta
+            flow.update_lipschitz(args.n_lipschitz_iters)
+            if args.learn_p and itr > args.annealing_iters: flow.compute_p_grads()
+
+        time_meter.update(time.time() - end)
+        print(
+            'Iter {:04d} | Time {:.4f}({:.4f}) | Loss {:.6f}({:.6f})'
+            ' | Logp(z) {:.6f}({:.6f}) | DeltaLogp {:.6f}({:.6f})'.format(
+                i+1, time_meter.val, time_meter.avg, loss_meter.val, loss_meter.avg, logpz_meter.val, logpz_meter.avg,
+                delta_logp_meter.val, delta_logp_meter.avg
+            )
+        )
+
+
         if (i + 1) % args.log_interval == 0 and args.plot:
             print("Log Likelihood at %d is %f" %(i+1, loss))
-            xline = torch.linspace(-3, 3, steps=100)
-            yline = torch.linspace(-3, 3, steps=100)
-            xgrid, ygrid = torch.meshgrid(xline, yline)
-            xyinput = torch.cat([xgrid.reshape(-1, 1), ygrid.reshape(-1, 1)],
-                                dim=1).to(args.dev)
-
             with torch.no_grad():
-                zgrid = flow.log_prob(xyinput).exp().reshape(100, 100)
+                flow.eval()
+                p_samples = sample_2d_data(args.dataset, 20000)
+                sample_fn, density_fn = flow.flow_model.inverse, flow.flow_model.forward
 
-            plt.contourf(xgrid.numpy(), ygrid.numpy(), zgrid.cpu().numpy(), cmap=cm.magma)
-            plt.title('iteration {}'.format(i + 1))
-            plt.show()
-            plt.savefig('figures/{}_{}.png'.format(args.plot_name, str(i+1)))
+                plt.figure(figsize=(9, 3))
+                visualize_transform(
+                    p_samples, torch.randn, flow.standard_normal_logprob, transform=sample_fn, inverse_transform=density_fn,
+                    samples=True, npts=400, device=args.dev
+                )
+                plt.savefig('figures/{}_{}.png'.format(args.plot_name, str(i+1)))
+                plt.close()
+                flow.train()
+
+        end = time.time()
 
 
 def main(args):
-    data = None
-    if args.dataset is not None:
-        data = create_dataset(args, args.dataset).to(args.dev)
     flow = create_flow(args, args.model_type)
-    optimizer = optim.Adam(flow.parameters())
-    train_flow(args, flow, optimizer, data)
+    optimizer = optim.Adam(flow.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    train_flow(args, flow, optimizer)
 
 
 if __name__ == '__main__':
@@ -80,13 +102,14 @@ if __name__ == '__main__':
     parser.add_argument('--plot', action='store_true', help='Plot a flow and target density.')
     parser.add_argument('--cuda', type=int, help='Which GPU to run on.')
     parser.add_argument('--seed', type=int, default=0, help='Random seed.')
+    parser.add_argument('--num_iters', type=int, default=500)
     parser.add_argument('--plot_name', type=str, default='test')
     # target density
     parser.add_argument('--model_type', type=str, default="Toy", help='Which Flow to use.')
     parser.add_argument('--dataset', type=str, default=None, help='Which potential function to approximate.')
     parser.add_argument('--nsamples', type=int, default=500, help='Number of Samples to Use')
     # model parameters
-    parser.add_argument('--data_dim', type=int, default=2, help='Dimension of the data.')
+    parser.add_argument('--input_dim', type=int, default=2, help='Dimension of the data.')
     parser.add_argument('--hidden_dim', type=int, default=32, help='Dimensions of hidden layers.')
     parser.add_argument('--num_layers', type=int, default=1, help='Number of hidden layers.')
     parser.add_argument('--n_blocks', type=int, default=1, help='Number of blocks.')
@@ -98,6 +121,7 @@ if __name__ == '__main__':
     parser.add_argument('--rtol', type=float, default=None)
     parser.add_argument('--learn-p', type=eval, choices=[True, False], default=False)
     parser.add_argument('--mixed', type=eval, choices=[True, False], default=True)
+    parser.add_argument('--beta', type=float, default=1.0)
 
     parser.add_argument('--dims', type=str, default='128-128-128-128')
     parser.add_argument('--act', type=str, default='swish')
@@ -109,6 +133,11 @@ if __name__ == '__main__':
     parser.add_argument('--n-dist', choices=['geometric', 'poisson'], default='geometric')
     # training parameters
     parser.add_argument('--log_interval', type=int, default=10, help='How often to save model and samples.')
+    parser.add_argument('--batch_size', type=int, default=500)
+    parser.add_argument('--test_batch_size', type=int, default=10000)
+    parser.add_argument('--lr', type=float, default=1e-3)
+    parser.add_argument('--weight-decay', type=float, default=1e-5)
+    parser.add_argument('--annealing-iters', type=int, default=0)
 
     args = parser.parse_args()
 

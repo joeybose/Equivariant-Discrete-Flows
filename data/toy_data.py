@@ -47,14 +47,28 @@ def potential_fn(dataset):
 
 def sample_2d_data(dataset, n_samples):
 
-    z = torch.randn(n_samples, 2)
+    # z = torch.randn(n_samples, 2)
 
-    if dataset == '8gaussians':
-        scale = 4
-        sq2 = 1/math.sqrt(2)
-        centers = [(1,0), (-1,0), (0,1), (0,-1), (sq2,sq2), (-sq2,sq2), (sq2,-sq2), (-sq2,-sq2)]
-        centers = torch.tensor([(scale * x, scale * y) for x,y in centers])
-        return sq2 * (0.5 * z + centers[torch.randint(len(centers), size=(n_samples,))])
+    if dataset == "8gaussians":
+        scale = 4.
+        centers = [(1, 0), (-1, 0), (0, 1), (0, -1), (1. / np.sqrt(2), 1. / np.sqrt(2)),
+                   (1. / np.sqrt(2), -1. / np.sqrt(2)), (-1. / np.sqrt(2),
+                                                         1. / np.sqrt(2)), (-1. / np.sqrt(2), -1. / np.sqrt(2))]
+        centers = [(scale * x, scale * y) for x, y in centers]
+
+        dataset = []
+        for i in range(n_samples):
+            point = np.random.randn(2) * 0.5
+            idx = np.random.randint(8)
+            center = centers[idx]
+            point[0] += center[0]
+            point[1] += center[1]
+            dataset.append(point)
+        dataset = np.array(dataset, dtype="float32")
+        dataset /= 1.414
+        return dataset
+        # return torch.from_numpy(dataset).type(torch.float32)
+        # return sq2 * (0.5 * z + centers[torch.randint(len(centers), size=(n_samples,))])
 
     elif dataset == '2spirals':
         n = torch.sqrt(torch.rand(n_samples // 2)) * 540 * (2 * math.pi) / 360

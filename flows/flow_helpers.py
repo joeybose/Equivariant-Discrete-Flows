@@ -25,62 +25,6 @@ from e2cnn import nn as enn
 
 kwargs_layer = {'Linear': nn.Linear, 'GCN': GCNConv, 'GAT': GATConv}
 
-def parse_vnorms(args):
-    ps = []
-    for p in args.vnorms:
-        if p == 'f':
-            ps.append(float('inf'))
-        else:
-            ps.append(float(p))
-    return ps[:-1], ps[1:]
-
-def build_nnet(args, dims, activation_fn=torch.nn.ReLU):
-    nnet = []
-    domains, codomains = parse_vnorms(args)
-    if args.learn_p:
-        if args.mixed:
-            domains = [torch.nn.Parameter(torch.tensor(0.)) for _ in domains]
-        else:
-            domains = [torch.nn.Parameter(torch.tensor(0.))] * len(domains)
-        codomains = domains[1:] + [domains[0]]
-    for i, (in_dim, out_dim, domain, codomain) in enumerate(zip(dims[:-1], dims[1:], domains, codomains)):
-        nnet.append(activation_fn())
-        nnet.append(
-            base_layers.get_linear(
-                in_dim,
-                out_dim,
-                coeff=args.coeff,
-                n_iterations=args.n_lipschitz_iters,
-                atol=args.atol,
-                rtol=args.rtol,
-                domain=domain,
-                codomain=codomain,
-                zero_init=(out_dim == 2),
-            )
-        )
-    return torch.nn.Sequential(*nnet)
-
-def update_lipschitz(model, n_iterations):
-    for m in model.modules():
-        if isinstance(m, base_layers.SpectralNormConv2d) or isinstance(m, base_layers.SpectralNormLinear):
-            m.compute_weight(update=True, n_iterations=n_iterations)
-        if isinstance(m, base_layers.InducedNormConv2d) or isinstance(m, base_layers.InducedNormLinear):
-            m.compute_weight(update=True, n_iterations=n_iterations)
-
-def get_ords(model):
-    ords = []
-    for m in model.modules():
-        if isinstance(m, base_layers.InducedNormConv2d) or isinstance(m, base_layers.InducedNormLinear):
-            domain, codomain = m.compute_domain_codomain()
-            if torch.is_tensor(domain):
-                domain = domain.item()
-            if torch.is_tensor(codomain):
-                codomain = codomain.item()
-            ords.append(domain)
-            ords.append(codomain)
-    return ords
-
-
 def create_real_nvp_blocks(input_size, hidden_size, n_blocks, n_hidden,
                           layer_type='Linear'):
     nets, nett = [], []

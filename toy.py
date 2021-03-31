@@ -27,11 +27,6 @@ from e2cnn import gspaces
 from e2cnn import nn as enn
 
 def train_flow(args, flow, optim):
-    # if args.dataset is None:
-        # data, y = datasets.make_moons(128, noise=.1)
-        # data = torch.tensor(data, dtype=torch.float32).to(args.dev)
-    # else:
-        # data = create_dataset(args, args.dataset).to(args.dev)
     time_meter = utils.RunningAverageMeter(0.93)
     loss_meter = utils.RunningAverageMeter(0.93)
     logpz_meter = utils.RunningAverageMeter(0.93)
@@ -75,13 +70,14 @@ def train_flow(args, flow, optim):
             print("Log Likelihood at %d is %f" %(i+1, loss))
             with torch.no_grad():
                 flow.eval()
-                p_samples = sample_2d_data(args.dataset, 20000)
-                sample_fn, density_fn = flow.flow_model.inverse, flow.flow_model.forward
+                p_samples = sample_2d_data(args.dataset, 400)
+                # sample_fn, density_fn = flow.flow_model.inverse, flow.flow_model.forward
+                sample_fn, density_fn = None, flow.flow_model.forward
 
                 plt.figure(figsize=(9, 3))
                 visualize_transform(
                     p_samples, torch.randn, flow.standard_normal_logprob, transform=sample_fn, inverse_transform=density_fn,
-                    samples=True, npts=400, device=args.dev
+                    samples=True, npts=100, device=args.dev
                 )
                 plt.savefig('figures/{}_{}.png'.format(args.plot_name, str(i+1)))
                 plt.close()

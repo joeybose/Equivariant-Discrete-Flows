@@ -340,6 +340,8 @@ def plt_flow_density(prior_logdensity, inverse_transform, ax, npts=100, memory=1
     inds = torch.arange(0, x.shape[0]).to(torch.int64)
     for ii in torch.split(inds, int(memory**2)):
         z_, delta_logp_ = inverse_transform(x[ii], zeros[ii])
+        if not torch.is_tensor(z_):
+            z_ = z_.tensor.squeeze()
         z.append(z_)
         delta_logp.append(delta_logp_)
     z = torch.cat(z, 0)
@@ -362,7 +364,7 @@ def plt_flow_samples(prior_sample, transform, ax, npts=100, memory=100, title="$
     inds = torch.arange(0, z.shape[0]).to(torch.int64)
     for ii in torch.split(inds, int(memory**2)):
         zk.append(transform(z[ii]))
-    zk = torch.cat(zk, 0).cpu().numpy()
+    zk = torch.cat(zk, 0).squeeze().cpu().numpy()
     ax.hist2d(zk[:, 0], zk[:, 1], range=[[LOW, HIGH], [LOW, HIGH]], bins=npts, cmap=cm.magma)
     ax.invert_yaxis()
     ax.get_xaxis().set_ticks([])

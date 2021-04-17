@@ -26,6 +26,9 @@ from flows import create_flow
 from e2cnn import gspaces
 from e2cnn import nn as enn
 
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
 def train_flow(args, flow, optim):
     time_meter = utils.RunningAverageMeter(0.93)
     loss_meter = utils.RunningAverageMeter(0.93)
@@ -88,6 +91,7 @@ def train_flow(args, flow, optim):
 
 def main(args):
     flow = create_flow(args, args.model_type)
+    print("Number of trainable parameters: {}".format(count_parameters(flow.flow_model)))
     optimizer = optim.Adam(flow.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     train_flow(args, flow, optimizer)
 
@@ -121,6 +125,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--dims', type=str, default='128-128-128-128')
     parser.add_argument('--act', type=str, default='swish')
+    parser.add_argument('--group', type=str, default='fliprot4', help='The choice of group representation for Equivariance')
     parser.add_argument('--brute-force', type=eval, choices=[True, False], default=False)
     parser.add_argument('--actnorm', type=eval, choices=[True, False], default=False)
     parser.add_argument('--batchnorm', type=eval, choices=[True, False], default=False)
@@ -143,6 +148,4 @@ if __name__ == '__main__':
 
     args.dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     project_name = utils.project_name(args.dataset)
-
-
     main(args)

@@ -20,13 +20,17 @@ import ipdb
 
 ACT_FNS = {
     'relu': enn.ReLU,
-    'tanh': torch.nn.Tanh,
     'elu': enn.ELU,
-    'selu': torch.nn.SELU,
-    'fullsort': base_layers.FullSort,
-    'maxmin': base_layers.MaxMin,
     'swish': base_layers.GeomSwish,
-    'lcube': base_layers.LipschitzCube,
+}
+
+GROUPS = {
+    'fliprot8': gspaces.FlipRot2dOnR2(N=8),
+    'fliprot4': gspaces.FlipRot2dOnR2(N=4),
+    'fliprot2': gspaces.FlipRot2dOnR2(N=2),
+    'rot8': gspaces.Rot2dOnR2(N=8),
+    'rot4': gspaces.Rot2dOnR2(N=4),
+    'rot2': gspaces.Rot2dOnR2(N=2),
 }
 
 ## Taken from: https://github.com/senya-ashukha/real-nvp-pytorch/blob/master/real-nvp-pytorch.ipynb
@@ -37,7 +41,7 @@ class EquivariantRealNVP(nn.Module):
         mask = torch.arange(input_size).float() % 2
         self.n_blocks = n_blocks
         self.n_hidden = n_hidden
-        self.group_action_type = gspaces.FlipRot2dOnR2(N=4)
+        self.group_action_type = GROUPS[args.group]
         self.dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         i_mask = 1 - mask
         mask = torch.stack([mask,i_mask]).repeat(int(n_blocks/2) + 1, 1).view(-1, 1, 1, input_size)
@@ -71,8 +75,6 @@ class EquivariantRealNVP(nn.Module):
         for i in reversed(range(0,self.n_blocks)):
             z_ = self.mask[i] * z
             ipdb.set_trace()
-            # utils.check_equivariance(self.group_action_type, self.input_type,
-                                     # z, lambda inp: torch.exp(inp))
             z_ = enn.GeometricTensor(z_, self.input_type)
             s = self.s[i](z_).tensor
             t = self.t[i](z_).tensor
@@ -83,9 +85,6 @@ class EquivariantRealNVP(nn.Module):
         return z.squeeze(), log_det_J
 
     def log_prob(self, inputs, edge_index=None):
-        # z, logp = self.forward(inputs)
-        # p_z = self.p_z([inputs.shape[-1]])
-        # return p_z.log_prob(z) + logp
         z, delta_logp = self.forward(inputs)
         # compute log p(z)
         logpz = self.standard_normal_logprob(z).sum(1, keepdim=True)
@@ -101,6 +100,76 @@ class EquivariantRealNVP(nn.Module):
         x = self.inverse(z)
         return x
 
+class EquivariantConvExp(nn.Module):
+    def __init__(self, args, n_blocks, input_size, hidden_size, n_hidden,
+                 group_action_type=None):
+        super(EquivariantConvExp, self).__init__()
+        mask = torch.arange(input_size).float() % 2
+        self.n_blocks = n_blocks
+        self.n_hidden = n_hidden
+        self.group_action_type = GROUPS[args.group]
+        self.group_card = len(list(self.group_action_type.testing_elements))
+        self.dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.p_z = StandardNormal
+        self.input_type = enn.FieldType(self.group_action_type, [self.group_action_type.trivial_repr])
+        self.flow_model = create_equivariant_convexp_blocks(input_size, hidden_size,
+                                                   n_blocks, n_hidden,
+                                                   self.group_action_type)
+        # base distribution for calculation of log prob under the model
+        self.register_buffer('base_dist_mean', torch.zeros(input_size))
+        self.register_buffer('base_dist_var', torch.ones(input_size))
+        self.mask = nn.Parameter(mask, requires_grad=False)
+
+    def standard_normal_sample(self, size):
+        return torch.randn(size)
+
+    def standard_normal_logprob(self, z):
+        logZ = -0.5 * math.log(2 * math.pi)
+        return logZ - z.pow(2) / 2
+
+    def inverse(self, z):
+        log_det_J, x = z.new_zeros(z.shape[0]), z.view(-1, 1, 1, 2)
+        B, C, H, W = x.size()
+        x = enn.GeometricTensor(x, self.input_type)
+        for i in range(0,self.n_blocks):
+            ipdb.set_trace()
+            x = self.flow_model[i](x, True)
+            filter = self.flow_model[i][0].expand_parameters()[0]
+            # filter = list(list(self.flow_model[i].modules())[1].modules())[1].expand_parameters()[0]
+            log_det_J += log_det(filter) * H * W
+        return x.tensor.squeeze(), log_det_J
+
+    def forward(self, x):
+        log_det_J, z = x.new_zeros(x.shape[0]), x.view(-1, 1, 1, 2)
+        B, C, H, W = z.size()
+        z = enn.GeometricTensor(z, self.input_type)
+        for i in reversed(range(0,self.n_blocks)):
+            # ipdb.set_trace()
+            z = self.flow_model[i](z)
+            # utils.check_equivariance(self.group_action_type, self.input_type,
+                                     # x, self.flow_model[i], 'GeomTensor')
+            filter = self.flow_model[i][0].expand_parameters()[0]
+            # filter = list(list(self.flow_model[i].modules())[1].modules())[1].expand_parameters()[0]
+            log_det_J -= log_det(filter) * H * W
+        return z.tensor.squeeze(), log_det_J
+
+    def log_prob(self, inputs, edge_index=None):
+        z, delta_logp = self.forward(inputs)
+        # compute log p(z)
+        logpz = self.standard_normal_logprob(z).sum(1, keepdim=True)
+
+        logpx = logpz - self.beta * delta_logp
+        loss = -torch.mean(logpx)
+        return loss, torch.mean(logpz), torch.mean(-delta_logp)
+
+    def sample(self, batchSize):
+        # TODO: Update this method for edge_index
+        z = self.prior.sample((batchSize, 1))
+        logp = self.prior.log_prob(z)
+        x = self.inverse(z)
+        return x
+
+
 class EquivariantToyResFlow(nn.Module):
     def __init__(self, args, n_blocks, input_size, hidden_size, n_hidden,
                  group_action_type=None):
@@ -109,7 +178,8 @@ class EquivariantToyResFlow(nn.Module):
         self.beta = args.beta
         self.n_blocks = n_blocks
         self.activation_fn = ACT_FNS[args.act]
-        self.group_action_type = gspaces.FlipRot2dOnR2(N=4)
+        self.group_action_type = GROUPS[args.group]
+        # self.group_action_type = gspaces.FlipRot2dOnR2(N=4)
         self.group_card = len(list(self.group_action_type.testing_elements))
         self.input_type = enn.FieldType(self.group_action_type, [self.group_action_type.trivial_repr])
         dims = [2] + list(map(int, args.dims.split('-'))) + [2]
@@ -226,9 +296,6 @@ class EquivariantToyResFlow(nn.Module):
         return z.tensor.squeeze(), delta_logp
 
     def log_prob(self, inputs):
-        # ipdb.set_trace()
-        # self.check_equivariance(self.group_action_type, self.input_type,
-                                # inputs, self.flow_model, 'GeomTensor')
         z, delta_logp = self.forward(inputs)
         # compute log p(z)
         logpz = self.standard_normal_logprob(z).sum(1, keepdim=True)

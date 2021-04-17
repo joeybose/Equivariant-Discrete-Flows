@@ -12,24 +12,25 @@ def create_dataset(arg_parse: argparse.Namespace, dataset_type: str, *args: Any,
         return sample_2d_data(dataset_type, arg_parse.batch_size)
     elif dataset_type in ["u1", "u2", "u3", "u4"]:
         return potential_fn(dataset_type)
-    elif dataset == "mnist_rot":
-        if validation:
-            if reshuffle:
-                seed = np.random.randint(0, 100000)
-            else:
-                seed = None
+    elif dataset_type == "mnist_rot":
+        arg_parse.im_dim = 1
+        arg_parse.n_classes = 10
+        if arg_parse.validation:
             train_loader, _, _ = data_loader_mnist_rot.build_mnist_rot_loader("train",
+                                                                              arg_parse,
                                                                               arg_parse.batch_size,
                                                                               rot_interpol_augmentation=arg_parse.augment,
                                                                               interpolation=arg_parse.interpolation,
                                                                               reshuffle_seed=arg_parse.seed)
             valid_loader, _, _ = data_loader_mnist_rot.build_mnist_rot_loader("valid",
-                                                                              arg_parse.eval_batch_size,
+                                                                              arg_parse,
+                                                                              arg_parse.val_batchsize,
                                                                               rot_interpol_augmentation=False,
                                                                               interpolation=arg_parse.interpolation,
                                                                               reshuffle_seed=arg_parse.seed)
         else:
             train_loader, _, _ = data_loader_mnist_rot.build_mnist_rot_loader("trainval",
+                                                                              arg_parse,
                                                                               arg_parse.batch_size,
                                                                               rot_interpol_augmentation=arg_parse.augment,
                                                                               interpolation=arg_parse.interpolation,
@@ -37,27 +38,29 @@ def create_dataset(arg_parse: argparse.Namespace, dataset_type: str, *args: Any,
             valid_loader = False
 
         test_loader, n_inputs, n_outputs = data_loader_mnist_rot.build_mnist_rot_loader("test",
-                                                                                        arg_parse.eval_batch_size,
+                                                                                        arg_parse,
+                                                                                        arg_parse.val_batchsize,
                                                                                         rot_interpol_augmentation=False)
-    elif dataset == "mnist_fliprot":
-        if validation:
-            if reshuffle:
-                seed = np.random.randint(0, 100000)
-            else:
-                seed = None
-
+        return train_loader, test_loader
+    elif dataset_type == "mnist_fliprot":
+        arg_parse.im_dim = 1
+        arg_parse.n_classes = 10
+        if arg_parse.validation:
             train_loader, _, _ = data_loader_mnist_fliprot.build_mnist_rot_loader("train",
+                                                                                  arg_parse,
                                                                                   arg_parse.batch_size,
                                                                                   rot_interpol_augmentation=arg_parse.augment,
                                                                                   interpolation=arg_parse.interpolation,
                                                                                   reshuffle_seed=arg_parse.seed)
             valid_loader, _, _ = data_loader_mnist_fliprot.build_mnist_rot_loader("valid",
-                                                                                  arg_parse.eval_batch_size,
+                                                                                  arg_parse,
+                                                                                  arg_parse.val_batchsize,
                                                                                   rot_interpol_augmentation=False,
                                                                                   interpolation=arg_parse.interpolation,
                                                                                   reshuffle_seed=arg_parse.seed)
         else:
             train_loader, _, _ = data_loader_mnist_fliprot.build_mnist_rot_loader("trainval",
+                                                                                  arg_parse,
                                                                                   arg_parse.batch_size,
                                                                                   rot_interpol_augmentation=arg_parse.augment,
                                                                                   interpolation=arg_parse.interpolation,
@@ -65,26 +68,29 @@ def create_dataset(arg_parse: argparse.Namespace, dataset_type: str, *args: Any,
             valid_loader = False
 
         test_loader, n_inputs, n_outputs = data_loader_mnist_fliprot.build_mnist_rot_loader("test",
-                                                                                            arg_parse.eval_batch_size,
+                                                                                            arg_parse,
+                                                                                            arg_parse.val_batchsize,
                                                                                             rot_interpol_augmentation=False)
-    elif dataset == "mnist12k":
-        if validation:
-            if reshuffle:
-                seed = np.random.randint(0, 100000)
-            else:
-                seed = None
+        return train_loader, test_loader
+    elif dataset_type == "mnist12k":
+        arg_parse.im_dim = 1
+        arg_parse.n_classes = 10
+        if arg_parse.validation:
             train_loader, _, _ = data_loader_mnist12k.build_mnist12k_loader("train",
+                                                                            arg_parse,
                                                                             arg_parse.batch_size,
                                                                             rot_interpol_augmentation=arg_parse.augment,
                                                                             interpolation=arg_parse.interpolation,
                                                                             reshuffle_seed=arg_parse.seed)
             valid_loader, _, _ = data_loader_mnist12k.build_mnist12k_loader("valid",
-                                                                            arg_parse.eval_batch_size,
+                                                                            arg_parse,
+                                                                            arg_parse.val_batchsize,
                                                                             rot_interpol_augmentation=False,
                                                                             interpolation=arg_parse.interpolation,
                                                                             reshuffle_seed=arg_parse.seed)
         else:
             train_loader, _, _ = data_loader_mnist12k.build_mnist12k_loader("trainval",
+                                                                            arg_parse,
                                                                             arg_parse.batch_size,
                                                                             rot_interpol_augmentation=arg_parse.augment,
                                                                             interpolation=arg_parse.interpolation,
@@ -92,9 +98,11 @@ def create_dataset(arg_parse: argparse.Namespace, dataset_type: str, *args: Any,
             valid_loader = False
 
         test_loader, n_inputs, n_outputs = data_loader_mnist12k.build_mnist12k_loader("test",
-                                                                                      arg_parse.eval_batch_size,
+                                                                                      arg_parse,
+                                                                                      arg_parse.val_batchsize,
                                                                                       # rot_interpol_augmentation=False
                                                                                       # interpolation=interpolation,
                                                                                       )
+        return train_loader, test_loader
     else:
         raise ValueError(f"Unknown dataset type: '{dataset_type}'.")

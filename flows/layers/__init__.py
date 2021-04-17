@@ -6,3 +6,4 @@ from .iresblock import *
 from .normalization import *
 from .squeeze import *
 from .glow import *
+from .equivariant_convexp import *

@@ -3,6 +3,7 @@ import torch.nn as nn
 import os
 import os.path as osp
 import argparse
+from torchvision.utils import save_image
 
 from collections import OrderedDict
 import torch
@@ -14,6 +15,9 @@ import copy
 import logging
 from torch._six import inf
 import torch.nn as nn
+from torch.optim.lr_scheduler import _LRScheduler
+import flows.layers.base as base_layers
+import flows.layers as layers
 from e2cnn import gspaces
 from e2cnn import nn as enn
 import ipdb
@@ -30,7 +34,6 @@ def check_equivariance(r2_act, out_type, data, func, data_type=None):
     if data_type == 'GeomTensor':
         data = enn.GeometricTensor(data.view(-1, 1, 1, 2), input_type)
     for g in r2_act.testing_elements:
-        ipdb.set_trace()
         output = func(data)
         if data_type == 'GeomTensor':
             rg_output = enn.GeometricTensor(output.tensor.view(-1,1,1,2).cpu(),
@@ -56,7 +59,6 @@ def check_equivariance(r2_act, out_type, data, func, data_type=None):
 
 def check_invariance(r2_act, out_type, data, func):
     input_type = enn.FieldType(r2_act, [r2_act.trivial_repr])
-    ipdb.set_trace()
     data = enn.GeometricTensor(data.view(-1, 1, 1, 2), input_type)
     for g in r2_act.testing_elements:
         log_prob = func(data)
@@ -70,18 +72,18 @@ def check_invariance(r2_act, out_type, data, func):
 
 class MultiInputSequential(nn.Sequential):
     def forward(self, *input):
+        ipdb.set_trace()
         multi_inp = False
         if len(input) > 1:
             multi_inp = True
-            _, edge_index = input[0], input[1]
+            _, other_inp = input[0], input[1]
 
         for module in self._modules.values():
             if multi_inp:
-                if hasattr(module, 'weight'):
+                if hasattr(module, 'weight') or hasattr(module, 'weights'):
                     input = [module(*input)]
                 else:
-                    # Only pass in the features to the Non-linearity
-                    input = [module(input[0]), edge_index]
+                    input = [module(input[0]), other_inp]
             else:
                 input = [module(*input)]
         return input[0]
@@ -380,6 +382,48 @@ def plt_samples(samples, ax, npts=100, title="$x ~ p(x)$"):
     ax.set_title(title)
 
 
+def makedirs(dirname):
+    if not os.path.exists(dirname):
+        os.makedirs(dirname)
+
+def visualize(args, epoch, flow_model, itr, real_imgs):
+    flow_model.eval()
+    makedirs(os.path.join(args.save, 'imgs'))
+    real_imgs = real_imgs[:32]
+    _real_imgs = real_imgs
+
+    fixed_z = torch.randn([min(32, args.batch_size), (args.im_dim +
+                                                          args.padding)
+                                *args.imagesize * args.imagesize]).to(args.dev)
+    if args.dataset == 'celeba_5bit':
+        nvals = 32
+    elif args.dataset == 'celebahq':
+        nvals = 2**args.nbits
+    else:
+        nvals = 256
+
+    with torch.no_grad():
+        # reconstructed real images
+        real_imgs, _ = add_padding(args, real_imgs, nvals)
+        if args.squeeze_first: real_imgs = squeeze_layer(real_imgs)
+        recon_imgs = flow_model(real_imgs.view(-1, *args.input_size[1:]),
+                                inverse=True).view(-1, *args.input_size[1:])
+        if args.squeeze_first: recon_imgs = squeeze_layer.inverse(recon_imgs)
+        recon_imgs = remove_padding(args, recon_imgs)
+
+        # random samples
+        fake_imgs = flow_model(fixed_z, inverse=True).view(-1, *args.input_size[1:])
+        if args.squeeze_first: fake_imgs = squeeze_layer.inverse(fake_imgs)
+        fake_imgs = remove_padding(args, fake_imgs)
+
+        fake_imgs = fake_imgs.view(-1, args.im_dim, args.imagesize, args.imagesize)
+        recon_imgs = recon_imgs.view(-1, args.im_dim, args.imagesize, args.imagesize)
+        imgs = torch.cat([_real_imgs, fake_imgs, recon_imgs], 0)
+
+        filename = os.path.join(args.save, 'imgs', 'e{:03d}_i{:06d}.png'.format(epoch, itr))
+        save_image(imgs.cpu().float(), filename, nrow=16, padding=2)
+    flow_model.train()
+
 def visualize_transform(
     potential_or_samples, prior_sample, prior_density, transform=None, inverse_transform=None, samples=False, npts=100,
     memory=100, device="cpu"
@@ -438,3 +482,187 @@ class RunningAverageMeter(object):
         else:
             self.avg = self.avg * self.momentum + val * (1 - self.momentum)
         self.val = val
+
+class ExponentialMovingAverage(object):
+
+    def __init__(self, module, decay=0.999):
+        """Initializes the model when .apply() is called the first time.
+        This is to take into account data-dependent initialization that occurs in the first iteration."""
+        self.module = module
+        self.decay = decay
+        self.shadow_params = {}
+        self.nparams = sum(p.numel() for p in module.parameters())
+
+    def init(self):
+        for name, param in self.module.named_parameters():
+            self.shadow_params[name] = param.data.clone()
+
+    def apply(self):
+        if len(self.shadow_params) == 0:
+            self.init()
+        else:
+            with torch.no_grad():
+                for name, param in self.module.named_parameters():
+                    self.shadow_params[name] -= (1 - self.decay) * (self.shadow_params[name] - param.data)
+
+    def set(self, other_ema):
+        self.init()
+        with torch.no_grad():
+            for name, param in other_ema.shadow_params.items():
+                self.shadow_params[name].copy_(param)
+
+    def replace_with_ema(self):
+        for name, param in self.module.named_parameters():
+            param.data.copy_(self.shadow_params[name])
+
+    def swap(self):
+        for name, param in self.module.named_parameters():
+            tmp = self.shadow_params[name].clone()
+            self.shadow_params[name].copy_(param.data)
+            param.data.copy_(tmp)
+
+    def __repr__(self):
+        return (
+            '{}(decay={}, module={}, nparams={})'.format(
+                self.__class__.__name__, self.decay, self.module.__class__.__name__, self.nparams
+            )
+        )
+
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
+def reduce_bits(x):
+    if args.nbits < 8:
+        x = x * 255
+        x = torch.floor(x / 2**(8 - args.nbits))
+        x = x / 2**args.nbits
+    return x
+
+
+def add_noise(x, nvals=256):
+    """
+    [0, 1] -> [0, nvals] -> add noise -> [0, 1]
+    """
+    if args.add_noise:
+        noise = x.new().resize_as_(x).uniform_()
+        x = x * (nvals - 1) + noise
+        x = x / nvals
+    return x
+
+
+def add_padding(args, x, nvals=256):
+    # Theoretically, padding should've been added before the add_noise preprocessing.
+    # nvals takes into account the preprocessing before padding is added.
+    if args.padding > 0:
+        if args.padding_dist == 'uniform':
+            u = x.new_empty(x.shape[0], args.padding, x.shape[2], x.shape[3]).uniform_()
+            logpu = torch.zeros_like(u).sum([1, 2, 3]).view(-1, 1)
+            return torch.cat([x, u / nvals], dim=1), logpu
+        elif args.padding_dist == 'gaussian':
+            u = x.new_empty(x.shape[0], args.padding, x.shape[2], x.shape[3]).normal_(nvals / 2, nvals / 8)
+            logpu = normal_logprob(u, nvals / 2, math.log(nvals / 8)).sum([1, 2, 3]).view(-1, 1)
+            return torch.cat([x, u / nvals], dim=1), logpu
+        else:
+            raise ValueError()
+    else:
+        return x, torch.zeros(x.shape[0], 1).to(x)
+
+
+def remove_padding(args, x):
+    if args.padding > 0:
+        return x[:, :im_dim, :, :]
+    else:
+        return x
+
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+def pretty_repr(a):
+    return '[[' + ','.join(list(map(lambda i: f'{i:.2f}', a))) + ']]'
+
+def update_lr(args, optimizer, itr):
+    iter_frac = min(float(itr + 1) / max(args.warmup_iters, 1), 1.0)
+    lr = args.lr * iter_frac
+    for param_group in optimizer.param_groups:
+        param_group["lr"] = lr
+
+class CosineAnnealingWarmRestarts(_LRScheduler):
+    r"""Set the learning rate of each parameter group using a cosine annealing
+    schedule, where :math:`\eta_{max}` is set to the initial lr, :math:`T_{cur}`
+    is the number of epochs since the last restart and :math:`T_{i}` is the number
+    of epochs between two warm restarts in SGDR:
+    .. math::
+        \eta_t = \eta_{min} + \frac{1}{2}(\eta_{max} - \eta_{min})(1 +
+        \cos(\frac{T_{cur}}{T_{i}}\pi))
+    When :math:`T_{cur}=T_{i}`, set :math:`\eta_t = \eta_{min}`.
+    When :math:`T_{cur}=0`(after restart), set :math:`\eta_t=\eta_{max}`.
+    It has been proposed in
+    `SGDR: Stochastic Gradient Descent with Warm Restarts`_.
+    Args:
+        optimizer (Optimizer): Wrapped optimizer.
+        T_0 (int): Number of iterations for the first restart.
+        T_mult (int, optional): A factor increases :math:`T_{i}` after a restart. Default: 1.
+        eta_min (float, optional): Minimum learning rate. Default: 0.
+        last_epoch (int, optional): The index of last epoch. Default: -1.
+    .. _SGDR\: Stochastic Gradient Descent with Warm Restarts:
+        https://arxiv.org/abs/1608.03983
+    """
+
+    def __init__(self, optimizer, T_0, T_mult=1, eta_min=0, last_epoch=-1):
+        if T_0 <= 0 or not isinstance(T_0, int):
+            raise ValueError("Expected positive integer T_0, but got {}".format(T_0))
+        if T_mult < 1 or not isinstance(T_mult, int):
+            raise ValueError("Expected integer T_mul >= 1, but got {}".format(T_mult))
+        self.T_0 = T_0
+        self.T_i = T_0
+        self.T_mult = T_mult
+        self.eta_min = eta_min
+        super(CosineAnnealingWarmRestarts, self).__init__(optimizer, last_epoch)
+        self.T_cur = last_epoch
+
+    def get_lr(self):
+        return [
+            self.eta_min + (base_lr - self.eta_min) * (1 + math.cos(math.pi * self.T_cur / self.T_i)) / 2
+            for base_lr in self.base_lrs
+        ]
+
+    def step(self, epoch=None):
+        """Step could be called after every update, i.e. if one epoch has 10 iterations
+        (number_of_train_examples / batch_size), we should call SGDR.step(0.1), SGDR.step(0.2), etc.
+        This function can be called in an interleaved way.
+        Example:
+            >>> scheduler = SGDR(optimizer, T_0, T_mult)
+            >>> for epoch in range(20):
+            >>>     scheduler.step()
+            >>> scheduler.step(26)
+            >>> scheduler.step() # scheduler.step(27), instead of scheduler(20)
+        """
+        if epoch is None:
+            epoch = self.last_epoch + 1
+            self.T_cur = self.T_cur + 1
+            if self.T_cur >= self.T_i:
+                self.T_cur = self.T_cur - self.T_i
+                self.T_i = self.T_i * self.T_mult
+        else:
+            if epoch >= self.T_0:
+                if self.T_mult == 1:
+                    self.T_cur = epoch % self.T_0
+                else:
+                    n = int(math.log((epoch / self.T_0 * (self.T_mult - 1) + 1), self.T_mult))
+                    self.T_cur = epoch - self.T_0 * (self.T_mult**n - 1) / (self.T_mult - 1)
+                    self.T_i = self.T_0 * self.T_mult**(n)
+            else:
+                self.T_i = self.T_0
+                self.T_cur = epoch
+        self.last_epoch = math.floor(epoch)
+        for param_group, lr in zip(self.optimizer.param_groups, self.get_lr()):
+            param_group['lr'] = lr
+def estimator_moments(model, baseline=0):
+    avg_first_moment = 0.
+    avg_second_moment = 0.
+    for m in model.modules():
+        if isinstance(m, layers.iResBlock):
+            avg_first_moment += m.last_firmom.item()
+            avg_second_moment += m.last_secmom.item()
+    return avg_first_moment, avg_second_moment

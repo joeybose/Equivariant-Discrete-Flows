@@ -16,7 +16,6 @@ from e2cnn import nn as enn
 from flows.flow_helpers import *
 import flows.layers.base as base_layers
 import flows.layers as layers
-import ipdb
 
 ACT_FNS = {
     'relu': enn.ReLU,

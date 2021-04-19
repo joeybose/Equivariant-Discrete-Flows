@@ -134,7 +134,7 @@ def do_train_epoch(args, epoch, flow_model, optim, train_loader, meters):
         gc.collect()
     pass
 
-def validate(epoch, flow_model, test_loader, ema=None):
+def validate(args, epoch, flow_model, test_loader, ema=None):
     """
     Evaluates the cross entropy between p_data and p_model.
     """
@@ -144,9 +144,9 @@ def validate(epoch, flow_model, test_loader, ema=None):
     if ema is not None:
         ema.swap()
 
-    flow_model.update_lipschitz(model)
+    flow_model.update_lipschitz()
 
-    flow_model = parallelize(model)
+    # flow_model = utils.parallelize(flow_model)
     flow_model.eval()
 
     correct = 0
@@ -155,12 +155,12 @@ def validate(epoch, flow_model, test_loader, ema=None):
     start = time.time()
     with torch.no_grad():
         for i, (x, y) in enumerate(tqdm(test_loader)):
-            x = x.to(device)
-            bpd, logits, _, _ = flow_model.compute_loss(x, model)
+            x = x.to(args.dev)
+            bpd, logits, _, _ = flow_model.compute_loss(args, x)
             bpd_meter.update(bpd.item(), x.size(0))
 
             if args.task in ['classification', 'hybrid']:
-                y = y.to(device)
+                y = y.to(args.dev)
                 loss = criterion(logits, y)
                 ce_meter.update(loss.item(), x.size(0))
                 _, predicted = logits.max(1)
@@ -197,13 +197,13 @@ def train_flow(args, flow, optim, scheduler, train_loader, test_loader):
         print('Current LR {}'.format(optim.param_groups[0]['lr']))
 
         do_train_epoch(args, epoch, flow, optim, train_loader, meters)
-        lipschitz_constants.append(flow.get_lipschitz_constants(flow))
+        lipschitz_constants.append(flow.get_lipschitz_constants())
         print('Lipsch: {}'.format(utils.pretty_repr(lipschitz_constants[-1])))
 
         if args.ema_val:
-            test_bpd = validate(epoch, flow, test_loader, ema)
+            test_bpd = validate(args, epoch, flow, test_loader, ema)
         else:
-            test_bpd = validate(epoch, flow, test_loader)
+            test_bpd = validate(args, epoch, flow, test_loader)
 
         if args.scheduler and scheduler is not None:
             scheduler.step()
@@ -221,8 +221,12 @@ def main(args):
 
     if args.squeeze_first:
         args.input_size = (input_size[0], input_size[1] * 4, input_size[2] // 2, input_size[3] // 2)
-    args.squeeze_layer = layers.SqueezeLayer(2)
-    args.init_layer = layers.LogitTransform(1e-6)
+    if args.model_type == 'E_resflow':
+        args.init_layer = layers.EquivariantLogitTransform(1e-6)
+        args.squeeze_layer = layers.EquivariantSqueezeLayer(2)
+    else:
+        args.init_layer = layers.LogitTransform(1e-6)
+        args.squeeze_layer = layers.SqueezeLayer(2)
 
     flow = create_flow(args, args.model_type)
     print("Number of trainable parameters: {}".format(utils.count_parameters(flow)))

@@ -1,6 +1,8 @@
 import math
 import torch
 import torch.nn as nn
+from e2cnn import gspaces
+from e2cnn import nn as enn
 
 _DEFAULT_ALPHA = 1e-6
 
@@ -75,6 +77,44 @@ class LogitTransform(nn.Module):
 
     def inverse(self, y, logpy=None):
         x = (torch.sigmoid(y) - self.alpha) / (1 - 2 * self.alpha)
+        if logpy is None:
+            return x
+        return x, logpy + self._logdetgrad(x).view(x.size(0), -1).sum(1, keepdim=True)
+
+    def _logdetgrad(self, x):
+        s = self.alpha + (1 - 2 * self.alpha) * x
+        logdetgrad = -torch.log(s - s * s) + math.log(1 - 2 * self.alpha)
+        return logdetgrad
+
+    def __repr__(self):
+        return ('{name}({alpha})'.format(name=self.__class__.__name__, **self.__dict__))
+
+class EquivariantLogitTransform(nn.Module):
+    """
+    The proprocessing step used in Real NVP:
+    y = sigmoid(x) - a / (1 - 2a)
+    x = logit(a + (1 - 2a)*y)
+    """
+
+    def __init__(self, alpha=_DEFAULT_ALPHA):
+        nn.Module.__init__(self)
+        self.alpha = alpha
+
+    def forward(self, x, logpx=None):
+        in_type = x.type
+        _, c, h, w = x.shape
+        s = self.alpha + (1 - 2 * self.alpha) * x.tensor
+        y = torch.log(s) - torch.log(1 - s)
+        y = enn.GeometricTensor(y.view(-1, c, h, w), in_type)
+        if logpx is None:
+            return y
+        return y, logpx - self._logdetgrad(x.tensor).view(x.tensor.size(0), -1).sum(1, keepdim=True)
+
+    def inverse(self, y, logpy=None):
+        # in_type = y.type
+        _, c, h, w = y.shape
+        x = (torch.sigmoid(y) - self.alpha) / (1 - 2 * self.alpha)
+        # x = enn.GeometricTensor(x.view(-1, c, h, w), in_type)
         if logpy is None:
             return x
         return x, logpy + self._logdetgrad(x).view(x.size(0), -1).sum(1, keepdim=True)

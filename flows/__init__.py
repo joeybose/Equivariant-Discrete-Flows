@@ -3,14 +3,15 @@ from .flows import *
 from .equivariant_flows import *
 from .toy_resflow import *
 from .resflow import *
+from .equivariant_resflow import *
 import argparse
 import ipdb
 
 kwargs_flows = {'MAFRealNVP': MAFRealNVP, 'RealNVP': RealNVP, "Toy": toy_flow,
                 "Simple":package_realnvp, "toy_resflow": ToyResFlow, "resflow":
-                ResidualFlow, "E_RealNVP": EquivariantRealNVP, "E_resflow":
-                EquivariantToyResFlow, "resflow": ResidualFlow,
-                "E_convexp": EquivariantConvExp}
+                ResidualFlow, "E_RealNVP": EquivariantRealNVP, "E_toy_resflow":
+                EquivariantToyResFlow, "resflow": ResidualFlow, "E_resflow":
+                EquivariantResidualFlow, "E_convexp": EquivariantConvExp}
 
 def create_flow(arg_parse: argparse.Namespace, model_type: str, *args: Any, **kwargs: Any):
     if arg_parse.dataset in ["8gaussians", "2spirals", "checkerboard", "rings", "pinwheel", "swissroll", "circles", "line", "cos"]:
@@ -20,6 +21,7 @@ def create_flow(arg_parse: argparse.Namespace, model_type: str, *args: Any, **kw
                                               arg_parse.num_layers).to(arg_parse.dev)
     else:
         flow_model = kwargs_flows[model_type](
+            arg_parse,
             arg_parse.input_size,
             n_blocks=list(map(int, arg_parse.n_blocks.split('-'))),
             intermediate_dim=arg_parse.idim,

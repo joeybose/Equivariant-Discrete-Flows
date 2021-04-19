@@ -41,6 +41,7 @@ class ResidualFlow(nn.Module):
 
     def __init__(
         self,
+        args,
         input_size,
         n_blocks=[16, 16],
         intermediate_dim=64,

@@ -554,8 +554,8 @@ class InducedNormEquivarConv2d(nn.Module):
                     old_v = v.clone()
                     old_u = u.clone()
 
-                    u = normalize_u(torch.mv(weight, v), codomain, out=u)
-                    v = normalize_v(torch.mv(weight.t(), u), domain, out=v)
+                    u = normalize_u(torch.mv(weight.squeeze(), v), codomain, out=u)
+                    v = normalize_v(torch.mv(weight.squeeze().t(), u), domain, out=v)
 
                     itrs_used = itrs_used + 1
 
@@ -574,7 +574,7 @@ class InducedNormEquivarConv2d(nn.Module):
                     u = u.clone()
                     v = v.clone()
 
-        sigma = torch.dot(u, torch.mv(weight, v))
+        sigma = torch.dot(u, torch.mv(weight.squeeze(), v))
         with torch.no_grad():
             self.scale.copy_(sigma)
         # soft normalization: only when sigma larger than coeff

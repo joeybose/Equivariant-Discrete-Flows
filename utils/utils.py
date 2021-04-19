@@ -658,6 +658,7 @@ class CosineAnnealingWarmRestarts(_LRScheduler):
         self.last_epoch = math.floor(epoch)
         for param_group, lr in zip(self.optimizer.param_groups, self.get_lr()):
             param_group['lr'] = lr
+
 def estimator_moments(model, baseline=0):
     avg_first_moment = 0.
     avg_second_moment = 0.
@@ -666,3 +667,6 @@ def estimator_moments(model, baseline=0):
             avg_first_moment += m.last_firmom.item()
             avg_second_moment += m.last_secmom.item()
     return avg_first_moment, avg_second_moment
+
+def parallelize(model):
+    return torch.nn.DataParallel(model)

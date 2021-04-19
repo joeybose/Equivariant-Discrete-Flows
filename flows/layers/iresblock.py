@@ -214,18 +214,24 @@ class Equivar_iResBlock(nn.Module):
         self.register_buffer('last_secmom', torch.zeros(1))
 
     def forward(self, x, logpx=None):
+        _, c, h, w = x.shape
         if logpx is None:
             y = x + self.nnet(x)
             return y
         else:
             g, logdetgrad = self._logdetgrad(x)
             if torch.is_tensor(g):
-                g = enn.GeometricTensor(g, self.nnet[-1].out_type)
+                try:
+                    g = enn.GeometricTensor(g, self.nnet[-1].out_type)
+                except:
+                    g = enn.GeometricTensor(g, self.nnet.nnet[-1].out_type)
+
             if torch.is_tensor(x):
-                x = enn.GeometricTensor(x.view(-1,1,1,2), self.nnet[0].in_type)
+                x = enn.GeometricTensor(x.view(-1, c, h, w), self.nnet[0].in_type)
             return x + g, logpx - logdetgrad
 
     def inverse(self, y, logpy=None):
+        _, c, h, w = y.shape
         x = self._inverse_fixed_point(y)
         if logpy is None:
             return x
@@ -233,14 +239,21 @@ class Equivar_iResBlock(nn.Module):
             return x, logpy + self._logdetgrad(x)[1]
 
     def _inverse_fixed_point(self, y, atol=1e-5, rtol=1e-5):
+        _, c, h, w = y.shape
         if torch.is_tensor(y):
-            y = enn.GeometricTensor(y.view(-1,1,1,2), self.nnet[0].in_type)
+            try:
+                y = enn.GeometricTensor(y.view(-1, c, h, w), self.nnet[0].in_type)
+            except:
+                y = enn.GeometricTensor(y.view(-1, c, h, w), self.nnet.nnet[0].in_type)
         x, x_prev = y.tensor - self.nnet(y).tensor, y.tensor
         i = 0
         tol = atol + y.tensor.abs() * rtol
         while not torch.all((x - x_prev)**2 / tol < 1):
             if torch.is_tensor(x):
-                x = enn.GeometricTensor(x.view(-1,1,1,2), self.nnet[0].in_type)
+                try:
+                    x = enn.GeometricTensor(x.view(-1, c, h, w), self.nnet[0].in_type)
+                except:
+                    x = enn.GeometricTensor(x.view(-1, c, h, w), self.nnet.nnet[0].in_type)
             x, x_prev = y.tensor - self.nnet(x).tensor, x.tensor
             i += 1
             if i > 1000:
@@ -251,10 +264,11 @@ class Equivar_iResBlock(nn.Module):
     def _logdetgrad(self, x):
         """Returns g(x) and logdet|d(x+g(x))/dx|."""
 
+        _, c, h, w = x.shape
         if torch.is_tensor(x):
-            x = x.view(-1,1,1,2)
+            x = x.view(-1, c, h, w)
         else:
-            x = x.tensor.view(-1,1,1,2)
+            x = x.tensor.view(-1, c, h, w)
 
         with torch.enable_grad():
             if (self.brute_force or not self.training) and (x.squeeze().ndimension() == 2 and x.shape[-1] == 2):
@@ -309,6 +323,7 @@ class Equivar_iResBlock(nn.Module):
                 if torch.is_tensor(x):
                     vareps = torch.randn_like(x)
                     # Do backprop-in-forward to save memory.
+                    # ipdb.set_trace()
                     if self.training and self.grad_in_forward:
                         g, logdetgrad = mem_eff_wrapper(
                             estimator_fn, self.nnet, x, n_power_series, vareps, coeff_fn, self.training

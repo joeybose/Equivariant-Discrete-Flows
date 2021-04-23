@@ -67,7 +67,7 @@ class GeomSwish(EquivariantModule):
     def __init__(self, in_type: FieldType, inplace: bool = False):
         r"""
 
-        Module that implements a pointwise ReLU to every channel independently.
+        Module that implements a pointwise Swish to every channel independently.
         The input representation is preserved by this operation and, therefore, it equals the output
         representation.
 
@@ -111,7 +111,6 @@ class GeomSwish(EquivariantModule):
 
         assert input.type == self.in_type, "Error! the type of the input does not match the input type of this module"
         return GeometricTensor((input.tensor * torch.sigmoid_(input.tensor * F.softplus(self.beta))).div_(1.1), self.out_type)
-        # return GeometricTensor(F.relu(input.tensor, inplace=self._inplace), self.out_type)
 
 
     def evaluate_output_shape(self, input_shape: Tuple[int, int, int, int]) -> Tuple[int, int, int, int]:

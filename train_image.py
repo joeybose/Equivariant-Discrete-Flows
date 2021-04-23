@@ -5,9 +5,10 @@ from torch import optim
 from torch.utils.data import DataLoader, TensorDataset
 import sklearn.datasets as datasets
 import flows.layers as layers
-
+import wandb
 import math
 import os
+import json
 import time
 import argparse
 import numpy as np
@@ -122,6 +123,11 @@ def do_train_epoch(args, epoch, flow_model, optim, train_loader, meters):
                     )
                 )
 
+                if args.wandb:
+                    wandb.log({'BPD': bpd_meter.val, "Logpz": logpz_meter.avg,
+                               '-DeltaLogp': deltalogp_meter.avg, 'GradNorm':
+                               gnorm_meter.avg, 'epoch': epoch})
+
             if args.task in ['classification', 'hybrid']:
                 s += ' | CE {ce_meter.avg:.4f} | Acc {0:.4f}'.format(100 * correct / total, ce_meter=ce_meter)
 
@@ -222,10 +228,10 @@ def main(args):
     if args.squeeze_first:
         args.input_size = (input_size[0], input_size[1] * 4, input_size[2] // 2, input_size[3] // 2)
     if args.model_type == 'E_resflow':
-        args.init_layer = layers.EquivariantLogitTransform(1e-6)
+        args.init_layer = layers.EquivariantLogitTransform(args.logit_init)
         args.squeeze_layer = layers.EquivariantSqueezeLayer(2)
     else:
-        args.init_layer = layers.LogitTransform(1e-6)
+        args.init_layer = layers.LogitTransform(args.logit_init)
         args.squeeze_layer = layers.SqueezeLayer(2)
 
     flow = create_flow(args, args.model_type)
@@ -265,6 +271,7 @@ if __name__ == '__main__':
     parser.add_argument('--imagesize', type=int, default=28)
     # i-Resnet params
     parser.add_argument('--coeff', type=float, default=0.98)
+    parser.add_argument('--logit_init', type=float, default=1e-6, help='Logit layer init')
     parser.add_argument('--vnorms', type=str, default='2222')
     parser.add_argument('--n-lipschitz-iters', type=int, default=None)
     parser.add_argument('--sn-tol', type=float, default=1e-3)
@@ -300,6 +307,8 @@ if __name__ == '__main__':
     parser.add_argument('--neumann-grad', type=eval, choices=[True, False], default=True)
     parser.add_argument('--mem-eff', type=eval, choices=[True, False], default=True)
     parser.add_argument('--n-dist', choices=['geometric', 'poisson'], default='geometric')
+    parser.add_argument('--out-fiber', type=str, default='regular')
+    parser.add_argument('--field-type', type=int, default=0, help='Only For Continuous groups. Picks the frequency.')
     parser.add_argument('--n-samples', type=int, default=1)
     parser.add_argument('--group', type=str, default='fliprot4', help='The choice of group representation for Equivariance')
     # training parameters
@@ -333,11 +342,23 @@ if __name__ == '__main__':
     parser.add_argument('--nworkers', type=int, default=4)
     parser.add_argument('--print-freq', help='Print progress every so iterations', type=int, default=20)
     parser.add_argument('--vis-freq', help='Visualize progress every so iterations', type=int, default=500)
+    parser.add_argument("--wandb", action="store_true", default=False, help='Use wandb for logging')
+    parser.add_argument('--namestr', type=str, default='E-Resflow', \
+            help='additional info in output filename to describe experiments')
     args = parser.parse_args()
 
     ''' Fix Random Seed '''
     seed_everything(args.seed)
     # Check if settings file
+    if os.path.isfile("settings.json"):
+        with open('settings.json') as f:
+            data = json.load(f)
+        args.wandb_apikey = data.get("wandbapikey")
+
+    if args.wandb:
+        os.environ['WANDB_API_KEY'] = args.wandb_apikey
+        wandb.init(project='Equivariant-Flows',
+                   name='Equivariant-Flows-{}-{}'.format(args.dataset, args.namestr))
 
     args.dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     project_name = utils.project_name(args.dataset)

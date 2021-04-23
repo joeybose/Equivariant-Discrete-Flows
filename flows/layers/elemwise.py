@@ -111,13 +111,13 @@ class EquivariantLogitTransform(nn.Module):
         return y, logpx - self._logdetgrad(x.tensor).view(x.tensor.size(0), -1).sum(1, keepdim=True)
 
     def inverse(self, y, logpy=None):
-        # in_type = y.type
+        in_type = y.type
         _, c, h, w = y.shape
-        x = (torch.sigmoid(y) - self.alpha) / (1 - 2 * self.alpha)
-        # x = enn.GeometricTensor(x.view(-1, c, h, w), in_type)
+        x = (torch.sigmoid(y.tensor) - self.alpha) / (1 - 2 * self.alpha)
+        x = enn.GeometricTensor(x.view(-1, c, h, w), in_type)
         if logpy is None:
             return x
-        return x, logpy + self._logdetgrad(x).view(x.size(0), -1).sum(1, keepdim=True)
+        return x, logpy + self._logdetgrad(x.tensor).view(x.size(0), -1).sum(1, keepdim=True)
 
     def _logdetgrad(self, x):
         s = self.alpha + (1 - 2 * self.alpha) * x

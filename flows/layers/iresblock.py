@@ -259,6 +259,10 @@ class Equivar_iResBlock(nn.Module):
             if i > 1000:
                 logger.info('Iterations exceeded 1000 for inverse.')
                 break
+        try:
+            x = enn.GeometricTensor(x.view(-1, c, h, w), self.nnet.nnet[-1].out_type)
+        except:
+            x = enn.GeometricTensor(x.view(-1, c, h, w), self.nnet[-1].out_type)
         return x
 
     def _logdetgrad(self, x):
@@ -323,7 +327,6 @@ class Equivar_iResBlock(nn.Module):
                 if torch.is_tensor(x):
                     vareps = torch.randn_like(x)
                     # Do backprop-in-forward to save memory.
-                    # ipdb.set_trace()
                     if self.training and self.grad_in_forward:
                         g, logdetgrad = mem_eff_wrapper(
                             estimator_fn, self.nnet, x, n_power_series, vareps, coeff_fn, self.training

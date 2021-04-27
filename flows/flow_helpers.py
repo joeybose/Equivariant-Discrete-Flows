@@ -7,6 +7,7 @@ import torch.nn.init as init
 from torch_geometric.nn import GCNConv, GATConv
 
 from utils.utils import MultiInputSequential
+from utils import utils
 import math
 import os
 import math
@@ -23,7 +24,16 @@ from e2cnn import nn as enn
 # Model layers and helpers
 # --------------------
 
-kwargs_layer = {'Linear': nn.Linear, 'GCN': GCNConv, 'GAT': GATConv}
+FIBERS = {
+    "trivial": utils.trivial_fiber,
+    "quotient": utils.quotient_fiber,
+    "regular": utils.regular_fiber,
+    "irrep": utils.irrep_fiber,
+    "mixed1": utils.mixed1_fiber,
+    "mixed2": utils.mixed2_fiber,
+}
+
+kwargs_layer = {'Linear': nn.Linear, 'Conv': nn.Conv2d, 'GCN': GCNConv, 'GAT': GATConv}
 
 def create_real_nvp_blocks(input_size, hidden_size, n_blocks, n_hidden,
                           layer_type='Linear'):
@@ -31,17 +41,39 @@ def create_real_nvp_blocks(input_size, hidden_size, n_blocks, n_hidden,
     # Build the Flow Block by Block
     if layer_type == 'GCN':
         GCNConv.cached = False
+    elif layer_type == 'Conv':
+        kernel_size = 3
+        stride = 1
+        padding = 1
     elif layer_type == 'GAT':
         GATConv.heads = 8
 
     for i in range(n_blocks):
-        block_nets = [kwargs_layer[layer_type](input_size, hidden_size)]
-        block_nett = [kwargs_layer[layer_type](input_size, hidden_size)]
+        block_nets = [kwargs_layer[layer_type](input_size, hidden_size,
+                                               kernel_size, stride, padding)]
+        block_nett = [kwargs_layer[layer_type](input_size, hidden_size,
+                                               kernel_size, stride, padding)]
         for _ in range(n_hidden):
-            block_nets += [nn.Tanh(), kwargs_layer[layer_type](hidden_size, hidden_size)]
-            block_nett += [nn.Tanh(), kwargs_layer[layer_type](hidden_size, hidden_size)]
-        block_nets += [nn.Tanh(), kwargs_layer[layer_type](hidden_size, input_size)]
-        block_nett += [nn.Tanh(), kwargs_layer[layer_type](hidden_size, input_size)]
+            block_nets += [nn.Tanh(), kwargs_layer[layer_type](hidden_size,
+                                                               hidden_size,
+                                                               kernel_size,
+                                                               stride,
+                                                               padding)]
+            block_nett += [nn.Tanh(), kwargs_layer[layer_type](hidden_size,
+                                                               hidden_size,
+                                                               kernel_size,
+                                                               stride,
+                                                               padding)]
+        block_nets += [nn.Tanh(), kwargs_layer[layer_type](hidden_size,
+                                                           input_size,
+                                                           kernel_size,
+                                                           stride,
+                                                           padding)]
+        block_nett += [nn.Tanh(), kwargs_layer[layer_type](hidden_size,
+                                                           input_size,
+                                                           kernel_size,
+                                                           stride,
+                                                           padding)]
         nets +=[MultiInputSequential(*block_nets)]
         nett +=[MultiInputSequential(*block_nett)]
 
@@ -50,58 +82,56 @@ def create_real_nvp_blocks(input_size, hidden_size, n_blocks, n_hidden,
     return s,t
 
 
-def create_equivariant_real_nvp_blocks(input_size, hidden_size, n_blocks,
-                                       n_hidden, group_action_type,
+def create_equivariant_real_nvp_blocks(input_size, in_type, field_type,
+                                       out_fiber, activation_fn, hidden_size,
+                                       n_blocks, n_hidden, group_action_type,
                                        kernel_size=3, padding=1):
     nets, nett = [], []
-    # the model is equivariant under rotations by 45 degrees, modelled by C8
-
-    # the input image is a scalar field, corresponding to the trivial representation
-    in_type = enn.FieldType(group_action_type, [group_action_type.trivial_repr])
 
     # we store the input type for wrapping the images into a geometric tensor during the forward pass
     input_type = in_type
-
-    out_type = enn.FieldType(group_action_type, [group_action_type.trivial_repr])
+    _, c, h , w = input_size
+    out_type = enn.FieldType(group_action_type, c*[group_action_type.trivial_repr])
+    inter_block_out_type = FIBERS[out_fiber](group_action_type, hidden_size,
+                                      field_type, fixparams=True)
     for i in range(n_blocks):
         s_block = [enn.SequentialModule(
-            enn.R2Conv(in_type, out_type, kernel_size=kernel_size,
+            enn.R2Conv(in_type, inter_block_out_type, kernel_size=kernel_size,
                        padding=padding, bias=True),
-            enn.InnerBatchNorm(out_type),
-            enn.ELU(out_type, inplace=True)
+            enn.InnerBatchNorm(inter_block_out_type),
+            activation_fn(inter_block_out_type, inplace=True)
         )]
         t_block = [enn.SequentialModule(
-            enn.R2Conv(in_type, out_type, kernel_size=kernel_size,
+            enn.R2Conv(in_type, inter_block_out_type, kernel_size=kernel_size,
                        padding=padding, bias=True),
-            enn.InnerBatchNorm(out_type),
-            enn.ELU(out_type, inplace=True)
+            enn.InnerBatchNorm(inter_block_out_type),
+            activation_fn(inter_block_out_type, inplace=True)
         )]
-        inter_block_out_type = enn.FieldType(group_action_type, hidden_size*[group_action_type.regular_repr])
         for _ in range(n_hidden):
             s_block += [enn.SequentialModule(
                 enn.R2Conv(s_block[-1].out_type, inter_block_out_type,
                            kernel_size=kernel_size, padding=padding, bias=True),
                 enn.InnerBatchNorm(inter_block_out_type),
-                enn.ELU(inter_block_out_type, inplace=True)
+                activation_fn(inter_block_out_type, inplace=True)
             )]
             t_block += [enn.SequentialModule(
                 enn.R2Conv(t_block[-1].out_type, inter_block_out_type,
                            kernel_size=kernel_size, padding=padding, bias=True),
                 enn.InnerBatchNorm(inter_block_out_type),
-                enn.ELU(inter_block_out_type, inplace=True)
+                activation_fn(inter_block_out_type, inplace=True)
             )]
 
         s_block += [enn.SequentialModule(
             enn.R2Conv(s_block[-1].out_type, in_type, kernel_size=kernel_size,
                        padding=padding, bias=True),
             enn.InnerBatchNorm(out_type),
-            enn.ELU(out_type, inplace=True)
+            activation_fn(out_type, inplace=True)
         )]
         t_block += [enn.SequentialModule(
             enn.R2Conv(t_block[-1].out_type, in_type, kernel_size=kernel_size,
                        padding=padding, bias=True),
             enn.InnerBatchNorm(out_type),
-            enn.ELU(out_type, inplace=True)
+            activation_fn(out_type, inplace=True)
         )]
         nets +=[MultiInputSequential(*s_block)]
         nett +=[MultiInputSequential(*t_block)]

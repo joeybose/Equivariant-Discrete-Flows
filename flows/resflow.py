@@ -311,7 +311,6 @@ class ResidualFlow(nn.Module):
 
             logpz = torch.mean(logpz).detach()
             delta_logp = torch.mean(-delta_logp).detach()
-
         return bits_per_dim, logits_tensor, logpz, delta_logp
 
     def update_lipschitz(self):

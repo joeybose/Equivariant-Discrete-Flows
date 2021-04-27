@@ -77,7 +77,6 @@ def check_invariance(r2_act, out_type, data, func):
 
 class MultiInputSequential(nn.Sequential):
     def forward(self, *input):
-        ipdb.set_trace()
         multi_inp = False
         if len(input) > 1:
             multi_inp = True
@@ -671,6 +670,9 @@ def estimator_moments(model, baseline=0):
         if isinstance(m, layers.iResBlock):
             avg_first_moment += m.last_firmom.item()
             avg_second_moment += m.last_secmom.item()
+        if isinstance(m, layers.Equivar_iResBlock):
+            avg_first_moment += m.last_firmom.item()
+            avg_second_moment += m.last_secmom.item()
     return avg_first_moment, avg_second_moment
 
 def parallelize(model):
@@ -686,6 +688,9 @@ def regular_fiber(gspace: gspaces.GeneralOnR2, planes: int, field_type: int =
         planes *= math.sqrt(N * CHANNELS_CONSTANT)
     planes = int(planes)
 
+    if planes % 2 != 0:
+        planes += 1
+
     return enn.FieldType(gspace, [gspace.regular_repr] * planes)
 
 
@@ -696,6 +701,8 @@ def irrep_fiber(gspace: gspaces.GeneralOnR2, planes: int, field_type: int = 0,
     N = gspace.fibergroup.order()
     planes = int(planes)
 
+    if planes % 2 != 0:
+        planes += 1
     return enn.FieldType(gspace, [gspace.irrep(0)] * planes)
 
 def quotient_fiber(gspace: gspaces.GeneralOnR2, planes: int, field_type: int =

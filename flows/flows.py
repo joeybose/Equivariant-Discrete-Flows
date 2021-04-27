@@ -31,6 +31,29 @@ ACTIVATION_FNS = {
     'lcube': base_layers.LipschitzCube,
 }
 
+def standard_normal_logprob(z):
+    logZ = -0.5 * math.log(2 * math.pi)
+    return logZ - z.pow(2) / 2
+
+
+def add_padding(args, x, nvals=256):
+    # Theoretically, padding should've been added before the add_noise preprocessing.
+    # nvals takes into account the preprocessing before padding is added.
+    if args.padding > 0:
+        if args.padding_dist == 'uniform':
+            u = x.new_empty(x.shape[0], args.padding, x.shape[2], x.shape[3]).uniform_()
+            logpu = torch.zeros_like(u).sum([1, 2, 3]).view(-1, 1)
+            return torch.cat([x, u / nvals], dim=1), logpu
+        elif args.padding_dist == 'gaussian':
+            u = x.new_empty(x.shape[0], args.padding, x.shape[2], x.shape[3]).normal_(nvals / 2, nvals / 8)
+            logpu = normal_logprob(u, nvals / 2, math.log(nvals / 8)).sum([1, 2, 3]).view(-1, 1)
+            return torch.cat([x, u / nvals], dim=1), logpu
+        else:
+            raise ValueError()
+    else:
+        return x, torch.zeros(x.shape[0], 1).to(x)
+
+
 #Reference: https://github.com/ritheshkumar95/pytorch-normalizing-flows/blob/master/modules.py
 LOG_SIG_MAX = 2
 LOG_SIG_MIN = -20
@@ -129,56 +152,82 @@ class MAFRealNVP(nn.Module):
 ## Taken from: https://github.com/senya-ashukha/real-nvp-pytorch/blob/master/real-nvp-pytorch.ipynb
 class RealNVP(nn.Module):
     def __init__(self, args, n_blocks, input_size, hidden_size, n_hidden,
-                 layer_type='Linear', radius=torch.Tensor([0])):
+                 layer_type='Conv'):
         super(RealNVP, self).__init__()
-        mask = torch.arange(input_size).float() % 2
-        self.n_blocks = n_blocks
+        _, self.c, self.h, self.w = input_size[:]
+        # mask_size = self.c * self.h * self.w
+        # mask = torch.arange(mask_size).float() % 2
+        self.n_blocks = int(n_blocks)
         self.n_hidden = n_hidden
-        self.radius = radius
         self.layer_type = layer_type
+        checkerboard = [[((i % 2) + j) % 2 for j in range(self.w)] for i in range(self.h)]
+        mask = torch.tensor(checkerboard).float()
+        # Reshape to (1, 1, height, width) for broadcasting with tensors of shape (B, C, H, W)
+        mask = mask.view(1, 1, self.h, self.w)
         self.dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         i_mask = 1 - mask
-        mask = torch.stack([mask,i_mask]).repeat(int(n_blocks/2) + 1, 1)
+        mask = torch.vstack([mask,i_mask]).repeat(int(self.n_blocks/2), 1, 1, 1)
         self.p_z = StandardNormal
-        self.s, self.t = create_real_nvp_blocks(input_size, hidden_size,
-                                                n_blocks, n_hidden, layer_type)
-        # base distribution for calculation of log prob under the model
-        self.register_buffer('base_dist_mean', torch.zeros(input_size))
-        self.register_buffer('base_dist_var', torch.ones(input_size))
+        self.s, self.t = create_real_nvp_blocks(self.c, hidden_size,
+                                                self.n_blocks, n_hidden, layer_type)
         self.mask = nn.Parameter(mask, requires_grad=False)
 
-    def inverse(self, z, edge_index=None):
+    def inverse(self, z, logpz=None):
+        z = z.view(-1, self.c, self.h, self.w)
         log_det_J, x = z.new_zeros(z.shape[0]), z
         for i in range(0,self.n_blocks):
             x_ = x*self.mask[i]
-            if self.layer_type != 'Linear':
-                s = self.s[i](x_, edge_index)
-                t = self.t[i](x_, edge_index)
-            else:
-                s = self.s[i](x_)
-                t = self.t[i](x_)
+            s = self.s[i](x_)
+            t = self.t[i](x_)
             x = x_ + (1 - self.mask[i]) * (x * torch.exp(s) + t)
-            log_det_J += ((1-self.mask[i])*s).sum(dim=1)  # log det dx/du
-        return x, log_det_J
+            log_det_J += ((1-self.mask[i])*s).sum(dim=(1,2,3))  # log det dx/du
+        return x.squeeze() if logpz is None else (z, -1*log_det_J.view(-1,1))
 
-    def forward(self, x, edge_index=None):
+    def forward(self, x, inverse=False):
+        if inverse:
+            return self.inverse(x)
+
         log_det_J, z = x.new_zeros(x.shape[0]), x
         for i in reversed(range(0,self.n_blocks)):
             z_ = self.mask[i] * z
-            if self.layer_type != 'Linear':
-                s = self.s[i](z_, edge_index)
-                t = self.t[i](z_, edge_index)
-            else:
-                s = self.s[i](z_)
-                t = self.t[i](z_)
+            s = self.s[i](z_)
+            t = self.t[i](z_)
             z = (1 - self.mask[i]) * (z - t) * torch.exp(-s) + z_
-            log_det_J -= ((1-self.mask[i])*s).sum(dim=1)
-        return z, log_det_J
+            log_det_J -= ((1-self.mask[i])*s).sum(dim=(1,2,3))
+        return z.squeeze(), log_det_J.view(-1, 1)
 
-    def log_prob(self, inputs, edge_index=None):
-        z, logp = self.forward(inputs, edge_index)
-        p_z = self.p_z([inputs.shape[-1]])
-        return p_z.log_prob(z) + logp
+    def log_prob(self, inputs, beta=1.):
+        z, delta_logp = self.forward(inputs)
+        logpz = standard_normal_logprob(z).view(z.size(0), -1).sum(1, keepdim=True)
+        logpx = logpz - beta * delta_logp
+        return logpx, logpz, -1*delta_logp
+        # p_z = self.p_z([inputs.shape[-1]])
+        # return p_z.log_prob(z) + logp
+
+    def compute_loss(self, args, inputs, beta=1.):
+        bits_per_dim, logits_tensor = torch.zeros(1).to(inputs), torch.zeros(args.n_classes).to(inputs)
+        logpz, delta_logp = torch.zeros(1).to(inputs), torch.zeros(1).to(inputs)
+
+        if args.dataset == 'celeba_5bit':
+            nvals = 32
+        elif args.dataset == 'celebahq':
+            nvals = 2**args.nbits
+        else:
+            nvals = 256
+
+        padded_inputs, logpu = add_padding(args, inputs, nvals)
+        _, logpz, delta_logp = self.log_prob(padded_inputs, beta)
+
+        # log p(x)
+        logpx = logpz - beta * delta_logp - np.log(nvals) * (
+            args.imagesize * args.imagesize * (args.im_dim + args.padding)
+        ) - logpu
+        bits_per_dim = -torch.mean(logpx) / (args.imagesize *
+                                             args.imagesize * args.im_dim) / np.log(2)
+
+        logpz = torch.mean(logpz).detach()
+        delta_logp = torch.mean(-delta_logp).detach()
+        return bits_per_dim, logits_tensor, logpz, delta_logp
 
     def sample(self, batchSize):
         # TODO: Update this method for edge_index

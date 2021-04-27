@@ -109,7 +109,7 @@ if __name__ == '__main__':
     parser.add_argument('--dataset', type=str, default=None, help='Which potential function to approximate.')
     parser.add_argument('--nsamples', type=int, default=500, help='Number of Samples to Use')
     # model parameters
-    parser.add_argument('--input_dim', type=int, default=2, help='Dimension of the data.')
+    parser.add_argument('--input_size', type=int, default=2, help='Dimension of the data.')
     parser.add_argument('--hidden_dim', type=int, default=32, help='Dimensions of hidden layers.')
     parser.add_argument('--num_layers', type=int, default=1, help='Number of hidden layers.')
     parser.add_argument('--n_blocks', type=int, default=1, help='Number of blocks.')

@@ -55,7 +55,7 @@ class mnist_fliprot_dataset(data.Dataset):
                 }
 
         else:
-            filename = './datasets/mnist_fliprot_data/mnist_fliprot_test.npz'
+            filename = './data/mnist_fliprot_data/mnist_fliprot_test.npz'
             data = np.load(filename)
 
         self.images = data['images'].astype(np.float32)

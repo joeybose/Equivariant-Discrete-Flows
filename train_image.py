@@ -82,23 +82,24 @@ def do_train_epoch(args, epoch, flow_model, optim, train_loader, meters):
             loss = bpd + crossent / np.log(2)  # Change cross entropy from nats to bits.
         loss.backward()
 
-        if global_itr % args.update_freq == args.update_freq - 1:
+        # if global_itr % args.update_freq == args.update_freq - 1:
 
-            if args.update_freq > 1:
-                with torch.no_grad():
-                    for p in flow_model.parameters():
-                        if p.grad is not None:
-                            p.grad /= args.update_freq
+            # if args.update_freq > 1:
+                # with torch.no_grad():
+                    # for p in flow_model.parameters():
+                        # if p.grad is not None:
+                            # p.grad /= args.update_freq
 
-            grad_norm = torch.nn.utils.clip_grad.clip_grad_norm_(flow_model.parameters(), 1.)
-            if args.learn_p: flow_model.compute_p_grads(model)
+        grad_norm = torch.nn.utils.clip_grad.clip_grad_norm_(flow_model.parameters(), 1.)
+        if args.learn_p: flow_model.compute_p_grads(model)
 
-            optim.step()
-            optim.zero_grad()
+        optim.step()
+        optim.zero_grad()
+        if 'resflow' in args.model_type:
             flow_model.update_lipschitz()
-            ema.apply()
+        ema.apply()
 
-            gnorm_meter.update(grad_norm)
+        gnorm_meter.update(grad_norm)
 
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -132,8 +133,8 @@ def do_train_epoch(args, epoch, flow_model, optim, train_loader, meters):
                 s += ' | CE {ce_meter.avg:.4f} | Acc {0:.4f}'.format(100 * correct / total, ce_meter=ce_meter)
 
             print(s)
-        if i % args.vis_freq == 0:
-            utils.visualize(args, epoch, flow_model, i, x)
+        # if i % args.vis_freq == 0:
+            # utils.visualize(args, epoch, flow_model, i, x)
 
         del x
         torch.cuda.empty_cache()
@@ -150,7 +151,8 @@ def validate(args, epoch, flow_model, test_loader, ema=None):
     if ema is not None:
         ema.swap()
 
-    flow_model.update_lipschitz()
+    if 'resflow' in args.model_type:
+        flow_model.update_lipschitz()
 
     # flow_model = utils.parallelize(flow_model)
     flow_model.eval()
@@ -177,6 +179,10 @@ def validate(args, epoch, flow_model, test_loader, ema=None):
     if ema is not None:
         ema.swap()
     s = 'Epoch: [{0}]\tTime {1:.2f} | Test bits/dim {bpd_meter.avg:.4f}'.format(epoch, val_time, bpd_meter=bpd_meter)
+
+    if args.wandb:
+        wandb.log({'Test BPD': bpd_meter.avg})
+
     if args.task in ['classification', 'hybrid']:
         s += ' | CE {:.4f} | Acc {:.2f}'.format(ce_meter.avg, 100 * correct / total)
     print(s)
@@ -203,8 +209,9 @@ def train_flow(args, flow, optim, scheduler, train_loader, test_loader):
         print('Current LR {}'.format(optim.param_groups[0]['lr']))
 
         do_train_epoch(args, epoch, flow, optim, train_loader, meters)
-        lipschitz_constants.append(flow.get_lipschitz_constants())
-        print('Lipsch: {}'.format(utils.pretty_repr(lipschitz_constants[-1])))
+        if 'resflow' in args.model_type:
+            lipschitz_constants.append(flow.get_lipschitz_constants())
+            print('Lipsch: {}'.format(utils.pretty_repr(lipschitz_constants[-1])))
 
         if args.ema_val:
             test_bpd = validate(args, epoch, flow, test_loader, ema)
@@ -213,6 +220,8 @@ def train_flow(args, flow, optim, scheduler, train_loader, test_loader):
 
         if args.scheduler and scheduler is not None:
             scheduler.step()
+
+    test_bpd = validate(args, epoch, flow, test_loader)
 
 def main(args):
     train_loader, test_loader = create_dataset(args, args.dataset)
@@ -287,17 +296,21 @@ if __name__ == '__main__':
     parser.add_argument('--dropout', type=float, default=0.)
     parser.add_argument('--fc', type=eval, default=False, choices=[True, False])
     parser.add_argument('--kernels', type=str, default='3-1-3')
+    parser.add_argument('--kernel_size', type=int, default=3)
     parser.add_argument('--add-noise', type=eval, choices=[True, False], default=True)
     parser.add_argument('--quadratic', type=eval, choices=[True, False], default=False)
     parser.add_argument('--fc-end', type=eval, choices=[True, False], default=True)
     parser.add_argument('--fc-idim', type=int, default=128)
     parser.add_argument('--preact', type=eval, choices=[True, False], default=True)
     parser.add_argument('--padding', type=int, default=0)
+    parser.add_argument('--realnvp-padding', type=int, default=1)
     parser.add_argument('--first-resblock', type=eval, choices=[True, False], default=True)
     parser.add_argument('--cdim', type=int, default=256)
     parser.add_argument('--block', type=str, choices=['resblock', 'coupling'], default='resblock')
 
     parser.add_argument('--dims', type=str, default='128-128-128-128')
+    parser.add_argument('--num_layers', type=int, default=4, help='Number of hidden layers.')
+    parser.add_argument('--hidden_dim', type=int, default=32, help='Dimensions of hidden layers.')
     parser.add_argument('--brute-force', type=eval, choices=[True, False], default=False)
     parser.add_argument('--exact-trace', type=eval, choices=[True, False], default=False)
     parser.add_argument('--factor-out', type=eval, choices=[True, False], default=False)

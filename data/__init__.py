@@ -1,9 +1,11 @@
 from typing import Any
+from torch.utils.data import DataLoader
 from .toy_data import sample_2d_data, potential_fn
 from .mnist_rot_code import data_loader_mnist_rot
 from .mnist_fliprot_code import data_loader_mnist_fliprot
 from .mnist12k_code import data_loader_mnist12k
 from .cifar10_code import data_loader_cifar10
+from .point_cloud import SpatialMNIST, ModelNet
 import argparse
 import ipdb
 
@@ -166,5 +168,17 @@ def create_dataset(arg_parse: argparse.Namespace, dataset_type: str, *args: Any,
 		# num_workers=num_workers,
 		# reshuffle=reshuffle
 	    # )
+    elif dataset == 'spatial_mnist':
+        trainset = SpatialMNIST(arg_parse.data_dir, True)
+        testset = SpatialMNIST(arg_parse.data_dir, False)
+        train_loader = DataLoader(trainset, batch_size=arg_parse.batch_size, shuffle=True, num_workers=8)
+        test_loader = DataLoader(testset, batch_size=arg_parse.val_batch_size, shuffle=False, num_workers=8)
+        return train_loader, test_loader
+    elif dataset == 'modelnet':
+        trainset = ModelNet(arg_parse.data_dir, arg_parse.category, arg_parse.set_size, True)
+        testset = ModelNet(arg_parse.data_dir, arg_parse.category, arg_parse.set_size, False)
+        train_loader = DataLoader(trainset, batch_size=arg_parse.batch_size, shuffle=True, num_workers=8)
+        test_loader = DataLoader(testset, batch_size=arg_parse.val_batch_size, shuffle=False, num_workers=8)
+        return train_loader, test_loader
     else:
         raise ValueError(f"Unknown dataset type: '{dataset_type}'.")

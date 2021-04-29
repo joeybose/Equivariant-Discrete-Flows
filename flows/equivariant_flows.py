@@ -25,14 +25,18 @@ ACT_FNS = {
 }
 
 GROUPS = {
+    'fliprot16': gspaces.FlipRot2dOnR2(N=16),
+    'fliprot12': gspaces.FlipRot2dOnR2(N=12),
     'fliprot8': gspaces.FlipRot2dOnR2(N=8),
     'fliprot4': gspaces.FlipRot2dOnR2(N=4),
     'fliprot2': gspaces.FlipRot2dOnR2(N=2),
-    'flip': gspaces.Flip2dOnR2(),
+    'rot16': gspaces.Rot2dOnR2(N=16),
+    'rot12': gspaces.Rot2dOnR2(N=12),
     'rot8': gspaces.Rot2dOnR2(N=8),
     'rot4': gspaces.Rot2dOnR2(N=4),
     'rot2': gspaces.Rot2dOnR2(N=2),
     'so2': gspaces.Rot2dOnR2(N=-1, maximum_frequency=10),
+    'o2': gspaces.FlipRot2dOnR2(N=-1, maximum_frequency=10),
 }
 
 

@@ -30,8 +30,6 @@ from data.toy_data import sample_2d_data
 from flows import create_flow
 from e2cnn import gspaces
 from e2cnn import nn as enn
-import warnings
-warnings.filterwarnings("ignore")
 
 criterion = torch.nn.CrossEntropyLoss()
 
@@ -51,9 +49,6 @@ def do_train_epoch(args, epoch, flow_model, optim, train_loader, meters):
         #   maximize log p(x) = log p(z) - log |det df/dx|
 
         x = x.to(args.dev)
-
-        if 'resflow' in args.model_type:
-            flow_model.update_lipschitz()
 
         beta = beta = min(1, global_itr / args.annealing_iters) if args.annealing_iters > 0 else 1.
         bpd, logits, logpz, neg_delta_logp = flow_model.compute_loss(args, x, beta=beta)
@@ -96,6 +91,7 @@ def do_train_epoch(args, epoch, flow_model, optim, train_loader, meters):
                             # p.grad /= args.update_freq
 
         grad_norm = torch.nn.utils.clip_grad.clip_grad_norm_(flow_model.parameters(), 1.)
+        # grad_norm = torch.nn.utils.clip_grad.clip_grad_norm_(flow_model.parameters(), 0.9)
         if args.learn_p: flow_model.compute_p_grads(model)
 
         optim.step()
@@ -184,9 +180,6 @@ def validate(args, epoch, flow_model, test_loader, ema=None):
     if ema is not None:
         ema.swap()
     s = 'Epoch: [{0}]\tTime {1:.2f} | Test bits/dim {bpd_meter.avg:.4f}'.format(epoch, val_time, bpd_meter=bpd_meter)
-    if args.wandb:
-        wandb.log({'Test BPD': bpd_meter.avg})
-
     if args.task in ['classification', 'hybrid']:
         s += ' | CE {:.4f} | Acc {:.2f}'.format(ce_meter.avg, 100 * correct / total)
     print(s)
@@ -217,10 +210,10 @@ def train_flow(args, flow, optim, scheduler, train_loader, test_loader):
             lipschitz_constants.append(flow.get_lipschitz_constants())
             print('Lipsch: {}'.format(utils.pretty_repr(lipschitz_constants[-1])))
 
-        if args.ema_val:
-            test_bpd = validate(args, epoch, flow, test_loader, ema)
-        else:
-            test_bpd = validate(args, epoch, flow, test_loader)
+        # if args.ema_val:
+            # test_bpd = validate(args, epoch, flow, test_loader, ema)
+        # else:
+            # test_bpd = validate(args, epoch, flow, test_loader)
 
         if args.scheduler and scheduler is not None:
             scheduler.step()

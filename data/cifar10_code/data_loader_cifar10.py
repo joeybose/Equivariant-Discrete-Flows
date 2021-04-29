@@ -89,7 +89,7 @@ def build_cifar10_loaders(batch_size,
     valid_transform = transforms.Compose([
         transforms.ToTensor(),
         AddNoise,
-        normalize,
+        # normalize,
     ])
 
     if augment:
@@ -104,7 +104,7 @@ def build_cifar10_loaders(batch_size,
         ])
     else:
         train_transform = transforms.Compose([
-            transforms.RandomCrop(32, padding=4),
+            # transforms.RandomCrop(32, padding=4),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             AddNoise,

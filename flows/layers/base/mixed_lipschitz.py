@@ -46,14 +46,14 @@ class InducedNormLinear(nn.Module):
 
         # Try different random seeds to find the best u and v.
         with torch.no_grad():
-            self.compute_weight(True, n_iterations=200, atol=None, rtol=None)
+            self.compute_weight(True, n_iterations=400, atol=None, rtol=None)
             best_scale = self.scale.clone()
             best_u, best_v = self.u.clone(), self.v.clone()
             if not (domain == 2 and codomain == 2):
                 for _ in range(10):
                     self.register_buffer('u', normalize_u(self.weight.new_empty(h).normal_(0, 1), codomain))
                     self.register_buffer('v', normalize_v(self.weight.new_empty(w).normal_(0, 1), domain))
-                    self.compute_weight(True, n_iterations=200)
+                    self.compute_weight(True, n_iterations=400)
                     if self.scale > best_scale:
                         best_u, best_v = self.u.clone(), self.v.clone()
             self.u.copy_(best_u)
@@ -100,7 +100,7 @@ class InducedNormLinear(nn.Module):
             if n_iterations is None and (atol is None or rtol is None):
                 raise ValueError('Need one of n_iteration or (atol, rtol).')
 
-            max_itrs = 200
+            max_itrs = 400
             if n_iterations is not None:
                 max_itrs = n_iterations
 
@@ -233,7 +233,7 @@ class InducedNormConv2d(nn.Module):
                     else:
                         self.u.copy_(normalize_u(torch.randn(num_output_dim).to(self.weight), codomain))
                         self.v.copy_(normalize_v(torch.randn(num_input_dim).to(self.weight), domain))
-                    self.compute_weight(True, n_iterations=200)
+                    self.compute_weight(True, n_iterations=400)
                     if self.scale > best_scale:
                         best_u, best_v = self.u.clone(), self.v.clone()
             self.u.copy_(best_u)
@@ -282,7 +282,7 @@ class InducedNormConv2d(nn.Module):
         if n_iterations is None and (atol is None or rtol is None):
             raise ValueError('Need one of n_iteration or (atol, rtol).')
 
-        max_itrs = 200
+        max_itrs = 400
         if n_iterations is not None:
             max_itrs = n_iterations
 
@@ -333,7 +333,7 @@ class InducedNormConv2d(nn.Module):
         if n_iterations is None and (atol is None or rtol is None):
             raise ValueError('Need one of n_iteration or (atol, rtol).')
 
-        max_itrs = 200
+        max_itrs = 400
         if n_iterations is not None:
             max_itrs = n_iterations
 
@@ -485,7 +485,7 @@ class InducedNormEquivarConv2d(nn.Module):
                     else:
                         self.u.copy_(normalize_u(torch.randn(num_output_dim).to(self.weight), codomain))
                         self.v.copy_(normalize_v(torch.randn(num_input_dim).to(self.weight), domain))
-                    self.compute_weight(True, n_iterations=200)
+                    self.compute_weight(True, n_iterations=400)
                     if self.scale > best_scale:
                         best_u, best_v = self.u.clone(), self.v.clone()
             self.u.copy_(best_u)
@@ -538,7 +538,7 @@ class InducedNormEquivarConv2d(nn.Module):
         if n_iterations is None and (atol is None or rtol is None):
             raise ValueError('Need one of n_iteration or (atol, rtol).')
 
-        max_itrs = 200
+        max_itrs = 400
         if n_iterations is not None:
             max_itrs = n_iterations
 
@@ -590,7 +590,7 @@ class InducedNormEquivarConv2d(nn.Module):
         if n_iterations is None and (atol is None or rtol is None):
             raise ValueError('Need one of n_iteration or (atol, rtol).')
 
-        max_itrs = 200
+        max_itrs = 400
         if n_iterations is not None:
             max_itrs = n_iterations
 

@@ -150,7 +150,6 @@ class FiberRealNVP(nn.Module):
     def compute_loss(self, args, inputs, beta=1.):
         bits_per_dim, logits_tensor = torch.zeros(1).to(inputs), torch.zeros(args.n_classes).to(inputs)
         logpz, delta_logp = torch.zeros(1).to(inputs), torch.zeros(1).to(inputs)
-        # ipdb.set_trace()
         # z, _ = self.forward(inputs)
         # x = self.inverse(z)
         if args.dataset == 'celeba_5bit':
@@ -160,16 +159,14 @@ class FiberRealNVP(nn.Module):
         else:
             nvals = 256
 
-        padded_inputs, logpu = add_padding(args, inputs, nvals)
         # z, _ = self.forward(inputs)
         # x, _ = self.inverse(z)
-        # _, logpz, delta_logp = self.log_prob(inputs, beta)
-        _, logpz, delta_logp = self.log_prob(padded_inputs, beta)
+        _, logpz, delta_logp = self.log_prob(inputs, beta)
 
         # log p(x)
         logpx = logpz - beta * delta_logp - np.log(nvals) * (
             args.imagesize * args.imagesize * (args.im_dim + args.padding)
-        ) - logpu
+        )
         bits_per_dim = -torch.mean(logpx) / (args.imagesize *
                                              args.imagesize * args.im_dim) / np.log(2)
 

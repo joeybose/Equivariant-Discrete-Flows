@@ -4,7 +4,6 @@ import torch.nn.functional as F
 import torch.distributions as D
 import torchvision.transforms as T
 import torch.nn.init as init
-from torch_geometric.nn import GCNConv, GATConv
 
 from utils.utils import MultiInputSequential
 from utils import utils
@@ -33,20 +32,16 @@ FIBERS = {
     "mixed2": utils.mixed2_fiber,
 }
 
-kwargs_layer = {'Linear': nn.Linear, 'Conv': nn.Conv2d, 'GCN': GCNConv, 'GAT': GATConv}
+kwargs_layer = {'Linear': nn.Linear, 'Conv': nn.Conv2d}
 
 def create_real_nvp_blocks(input_size, hidden_size, n_blocks, n_hidden,
                           layer_type='Linear'):
     nets, nett = [], []
     # Build the Flow Block by Block
-    if layer_type == 'GCN':
-        GCNConv.cached = False
-    elif layer_type == 'Conv':
+    if layer_type == 'Conv':
         kernel_size = 3
         stride = 1
         padding = 1
-    elif layer_type == 'GAT':
-        GATConv.heads = 8
 
     for i in range(n_blocks):
         block_nets = [kwargs_layer[layer_type](input_size, hidden_size,

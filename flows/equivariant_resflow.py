@@ -24,6 +24,7 @@ GROUPS = {
     'fliprot8': gspaces.FlipRot2dOnR2(N=8),
     'fliprot4': gspaces.FlipRot2dOnR2(N=4),
     'fliprot2': gspaces.FlipRot2dOnR2(N=2),
+    'flip': gspaces.Flip2dOnR2(),
     'rot16': gspaces.Rot2dOnR2(N=16),
     'rot12': gspaces.Rot2dOnR2(N=12),
     'rot8': gspaces.Rot2dOnR2(N=8),
@@ -33,14 +34,14 @@ GROUPS = {
     'o2': gspaces.FlipRot2dOnR2(N=-1, maximum_frequency=10),
 }
 
-FIBERS = {
-    "trivial": utils.trivial_fiber,
-    "quotient": utils.quotient_fiber,
-    "regular": utils.regular_fiber,
-    "irrep": utils.irrep_fiber,
-    "mixed1": utils.mixed1_fiber,
-    "mixed2": utils.mixed2_fiber,
-}
+# FIBERS = {
+    # "trivial": utils.trivial_fiber,
+    # "quotient": utils.quotient_fiber,
+    # "regular": utils.regular_fiber,
+    # "irrep": utils.irrep_fiber,
+    # "mixed1": utils.mixed1_fiber,
+    # "mixed2": utils.mixed2_fiber,
+# }
 
 def standard_normal_logprob(z):
     logZ = -0.5 * math.log(2 * math.pi)
@@ -375,10 +376,15 @@ class EquivariantResidualFlow(nn.Module):
             bits_per_dim = -torch.mean(logpx) / (args.imagesize *
                                                  args.imagesize * args.im_dim) / np.log(2)
 
-            logpz = torch.mean(logpz).detach()
-            delta_logp = torch.mean(-delta_logp).detach()
+            avg_logpz = torch.mean(logpz).detach()
+            avg_delta_logp = torch.mean(-delta_logp).detach()
 
-        return bits_per_dim, logits_tensor, logpz, delta_logp
+        # if bits_per_dim < 0:
+            # ipdb.set_trace()
+            # inv = self.forward(z, inverse=True)
+            # torch.allclose(x, inv, atol=1e-4)
+
+        return bits_per_dim, logits_tensor, avg_logpz, avg_delta_logp, z
 
     def update_lipschitz(self):
         with torch.no_grad():

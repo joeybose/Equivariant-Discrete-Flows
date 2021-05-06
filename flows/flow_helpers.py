@@ -5,7 +5,7 @@ import torch.distributions as D
 import torchvision.transforms as T
 import torch.nn.init as init
 
-from utils.utils import MultiInputSequential
+# from utils.utils import MultiInputSequential
 from utils import utils
 import math
 import os
@@ -16,23 +16,41 @@ import numpy as np
 import copy
 import flows.layers.base as base_layers
 import flows.layers as layers
-
+from flows.invariant_maps import InvariantCNNBlock, InvariantCNNBlock2, InvariantCNNBlock3
+import ipdb
 from e2cnn import gspaces
 from e2cnn import nn as enn
 # --------------------
 # Model layers and helpers
 # --------------------
 
-FIBERS = {
-    "trivial": utils.trivial_fiber,
-    "quotient": utils.quotient_fiber,
-    "regular": utils.regular_fiber,
-    "irrep": utils.irrep_fiber,
-    "mixed1": utils.mixed1_fiber,
-    "mixed2": utils.mixed2_fiber,
-}
+# FIBERS = {
+    # "trivial": utils.trivial_fiber,
+    # "quotient": utils.quotient_fiber,
+    # "regular": utils.regular_fiber,
+    # "irrep": utils.irrep_fiber,
+    # "mixed1": utils.mixed1_fiber,
+    # "mixed2": utils.mixed2_fiber,
+# }
 
 kwargs_layer = {'Linear': nn.Linear, 'Conv': nn.Conv2d}
+
+class MultiInputSequential(nn.Sequential):
+    def forward(self, *input):
+        multi_inp = False
+        if len(input) > 1:
+            multi_inp = True
+            _, other_inp = input[0], input[1]
+
+        for module in self._modules.values():
+            if multi_inp:
+                if hasattr(module, 'weight') or hasattr(module, 'weights'):
+                    input = [module(*input)]
+                else:
+                    input = [module(input[0]), other_inp]
+            else:
+                input = [module(*input)]
+        return input[0]
 
 def create_real_nvp_blocks(input_size, hidden_size, n_blocks, n_hidden,
                           layer_type='Linear'):
@@ -77,10 +95,34 @@ def create_real_nvp_blocks(input_size, hidden_size, n_blocks, n_hidden,
     return s,t
 
 
+def create_invariant_real_nvp_blocks(input_size, in_type, field_type,
+                                       out_fiber, activation_fn, hidden_size,
+                                       n_blocks, n_hidden, group_action_type,
+                                       kernel_size=3, padding=1, only_t=False):
+    nets = []
+
+    # we store the input type for wrapping the images into a geometric tensor during the forward pass
+    input_type = in_type
+    _, c, h , w = input_size
+    out_type = enn.FieldType(group_action_type, c*[group_action_type.trivial_repr])
+    inter_block_out_type = FIBERS[out_fiber](group_action_type, hidden_size,
+                                      field_type, fixparams=True)
+    for i in range(n_blocks):
+        # s_block = InvariantCNNBlock(input_size, in_type, field_type,
+                                      # out_fiber, activation_fn, hidden_size,
+                                      # group_action_type)
+        s_block = InvariantCNNBlock3(input_size, in_type, field_type,
+                                      out_fiber, activation_fn, hidden_size,
+                                      group_action_type)
+        nets +=[s_block]
+
+    s = nets = MultiInputSequential(*nets)
+    return s
+
 def create_equivariant_real_nvp_blocks(input_size, in_type, field_type,
                                        out_fiber, activation_fn, hidden_size,
                                        n_blocks, n_hidden, group_action_type,
-                                       kernel_size=3, padding=1):
+                                       kernel_size=3, padding=1, only_t=False):
     nets, nett = [], []
 
     # we store the input type for wrapping the images into a geometric tensor during the forward pass
@@ -90,12 +132,13 @@ def create_equivariant_real_nvp_blocks(input_size, in_type, field_type,
     inter_block_out_type = FIBERS[out_fiber](group_action_type, hidden_size,
                                       field_type, fixparams=True)
     for i in range(n_blocks):
-        s_block = [enn.SequentialModule(
-            enn.R2Conv(in_type, inter_block_out_type, kernel_size=kernel_size,
-                       padding=padding, bias=True),
-            enn.InnerBatchNorm(inter_block_out_type),
-            activation_fn(inter_block_out_type, inplace=True)
-        )]
+        if not only_t:
+            s_block = [enn.SequentialModule(
+                enn.R2Conv(in_type, inter_block_out_type, kernel_size=kernel_size,
+                           padding=padding, bias=True),
+                enn.InnerBatchNorm(inter_block_out_type),
+                activation_fn(inter_block_out_type, inplace=True)
+            )]
         t_block = [enn.SequentialModule(
             enn.R2Conv(in_type, inter_block_out_type, kernel_size=kernel_size,
                        padding=padding, bias=True),
@@ -103,12 +146,13 @@ def create_equivariant_real_nvp_blocks(input_size, in_type, field_type,
             activation_fn(inter_block_out_type, inplace=True)
         )]
         for _ in range(n_hidden):
-            s_block += [enn.SequentialModule(
-                enn.R2Conv(s_block[-1].out_type, inter_block_out_type,
-                           kernel_size=kernel_size, padding=padding, bias=True),
-                enn.InnerBatchNorm(inter_block_out_type),
-                activation_fn(inter_block_out_type, inplace=True)
-            )]
+            if not only_t:
+                s_block += [enn.SequentialModule(
+                    enn.R2Conv(s_block[-1].out_type, inter_block_out_type,
+                               kernel_size=kernel_size, padding=padding, bias=True),
+                    enn.InnerBatchNorm(inter_block_out_type),
+                    activation_fn(inter_block_out_type, inplace=True)
+                )]
             t_block += [enn.SequentialModule(
                 enn.R2Conv(t_block[-1].out_type, inter_block_out_type,
                            kernel_size=kernel_size, padding=padding, bias=True),
@@ -116,24 +160,29 @@ def create_equivariant_real_nvp_blocks(input_size, in_type, field_type,
                 activation_fn(inter_block_out_type, inplace=True)
             )]
 
-        s_block += [enn.SequentialModule(
-            enn.R2Conv(s_block[-1].out_type, in_type, kernel_size=kernel_size,
-                       padding=padding, bias=True),
-            enn.InnerBatchNorm(out_type),
-            activation_fn(out_type, inplace=True)
-        )]
+        if not only_t:
+            s_block += [enn.SequentialModule(
+                enn.R2Conv(s_block[-1].out_type, in_type, kernel_size=kernel_size,
+                           padding=padding, bias=True),
+                enn.InnerBatchNorm(out_type),
+                activation_fn(out_type, inplace=True)
+            )]
+            nets +=[MultiInputSequential(*s_block)]
+
         t_block += [enn.SequentialModule(
             enn.R2Conv(t_block[-1].out_type, in_type, kernel_size=kernel_size,
                        padding=padding, bias=True),
             enn.InnerBatchNorm(out_type),
             activation_fn(out_type, inplace=True)
         )]
-        nets +=[MultiInputSequential(*s_block)]
         nett +=[MultiInputSequential(*t_block)]
 
-    s = nets = MultiInputSequential(*nets)
     t = nett = MultiInputSequential(*nett)
-    return s,t
+    if not only_t:
+        s = nets = MultiInputSequential(*nets)
+        return s,t
+    else:
+        return t
 
 
 def create_equivariant_convexp_blocks(input_size, hidden_size, n_blocks,

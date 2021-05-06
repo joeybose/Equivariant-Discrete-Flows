@@ -298,6 +298,7 @@ class ResidualFlow(nn.Module):
         elif args.task == 'classification':
             z, logits_tensor = self.forward(x.view(-1, *args.input_size[1:]), classify=True)
 
+        # ipdb.set_trace()
         if args.task in ['density', 'hybrid']:
             # log p(z)
             logpz = standard_normal_logprob(z).view(z.size(0), -1).sum(1, keepdim=True)
@@ -311,7 +312,7 @@ class ResidualFlow(nn.Module):
 
             logpz = torch.mean(logpz).detach()
             delta_logp = torch.mean(-delta_logp).detach()
-        return bits_per_dim, logits_tensor, logpz, delta_logp
+        return bits_per_dim, logits_tensor, logpz, delta_logp, z
 
     def update_lipschitz(self):
         with torch.no_grad():

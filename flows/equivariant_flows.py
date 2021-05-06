@@ -5,6 +5,10 @@ import torch.nn.functional as F
 from torch.distributions import Normal
 from torch import distributions
 from torch.nn.parameter import Parameter
+from torch.utils.data import Dataset
+from torchvision.transforms import RandomRotation
+from torchvision.transforms import Pad
+from torchvision.transforms import Resize
 import ipdb
 from sklearn import cluster, datasets, mixture
 from sklearn.preprocessing import StandardScaler
@@ -30,6 +34,7 @@ GROUPS = {
     'fliprot8': gspaces.FlipRot2dOnR2(N=8),
     'fliprot4': gspaces.FlipRot2dOnR2(N=4),
     'fliprot2': gspaces.FlipRot2dOnR2(N=2),
+    'flip': gspaces.Flip2dOnR2(),
     'rot16': gspaces.Rot2dOnR2(N=16),
     'rot12': gspaces.Rot2dOnR2(N=12),
     'rot8': gspaces.Rot2dOnR2(N=8),
@@ -62,6 +67,182 @@ def add_padding(args, x, nvals=256):
     else:
         return x, torch.zeros(x.shape[0], 1).to(x)
 
+
+class EquivariantRealNVP(nn.Module):
+    def __init__(self, args, n_blocks, input_size, hidden_size, n_hidden,
+                 group_action_type=None):
+        super(EquivariantRealNVP, self).__init__()
+        _, self.c, self.h, self.w = input_size[:]
+        assert self.c > 1
+        mask = torch.arange(self.c).float() % 2
+        self.n_blocks = int(n_blocks)
+        self.n_hidden = n_hidden
+        self.group_action_type = GROUPS[args.group]
+        self.out_fiber = args.out_fiber
+        self.field_type = args.field_type
+        self.group_card = len(list(self.group_action_type.testing_elements))
+        self.dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        i_mask = 1 - mask
+        mask = torch.stack([mask,i_mask]).repeat(int(self.n_blocks/2) + 1, 1)
+        self.p_z = StandardNormal
+        self.input_type = enn.FieldType(self.group_action_type, self.c*[self.group_action_type.trivial_repr])
+        self.activation_fn = ACT_FNS[args.act]
+        self.t = create_equivariant_real_nvp_blocks(input_size,
+                                                    self.input_type,
+                                                    self.field_type,
+                                                    self.out_fiber,
+                                                    self.activation_fn,
+                                                    hidden_size, self.n_blocks,
+                                                    n_hidden,
+                                                    self.group_action_type,
+                                                    args.kernel_size,
+                                                    args.realnvp_padding,
+                                                    only_t=True)
+
+        self.s = create_invariant_real_nvp_blocks(input_size,
+                                                    self.input_type,
+                                                    self.field_type,
+                                                    self.out_fiber,
+                                                    self.activation_fn,
+                                                    hidden_size, self.n_blocks,
+                                                    n_hidden,
+                                                    self.group_action_type,
+                                                    args.kernel_size,
+                                                    args.realnvp_padding)
+
+        self.mask = nn.Parameter(mask, requires_grad=False)
+
+    def inverse(self, z, logpz=None):
+        log_det_J, x = z.new_zeros(z.shape[0]), z.view(-1, self.c, self.h, self.w)
+        for i in range(0,self.n_blocks):
+            fiber_batch_mask = self.mask[i].view(self.c, 1, 1).repeat(x.shape[0], 1 , 1, 1)
+            x_ = fiber_batch_mask*x
+            x_ = enn.GeometricTensor(x_, self.input_type)
+            s = self.s[i](x_).tensor
+            t = self.t[i](x_).tensor
+            inverse_fiber_batch_mask = (1- self.mask[i]).view(self.c, 1, 1).repeat(x.shape[0], 1 , 1, 1)
+            x = x_.tensor + inverse_fiber_batch_mask * (x * torch.exp(s) + t)
+            log_det_J += (inverse_fiber_batch_mask*s).sum(dim=(1,2,3))  # log det dx/du
+        return x.squeeze() if logpz is None else (z, -1*log_det_J.view(-1,1))
+
+    def dummy_func(self, z):
+        for i in reversed(range(0,self.n_blocks)):
+            z = z.tensor
+            fiber_batch_mask = self.mask[i].view(self.c, 1, 1).repeat(z.shape[0], 1 , 1, 1)
+            z_ = fiber_batch_mask * z
+            z_ = enn.GeometricTensor(z_, self.input_type)
+            s = self.s[i](z_).tensor
+            t = self.t[i](z_).tensor
+            inverse_fiber_batch_mask = (1- self.mask[i]).view(self.c, 1, 1).repeat(z.shape[0], 1 , 1, 1)
+            z = inverse_fiber_batch_mask * (z - t) * torch.exp((-1.* s)) + z_.tensor
+            z = enn.GeometricTensor(z, self.input_type)
+        return z
+
+    def forward(self, x, inverse=False):
+        if inverse:
+            return self.inverse(x)
+        log_det_J, z = x.new_zeros(x.shape[0]), x.view(-1, self.c, self.h, self.w)
+        # my_x = enn.GeometricTensor(x, self.input_type)
+        # self.check_equivariance(self.group_action_type, self.input_type, my_x,
+                                # self.dummy_func)
+        for i in reversed(range(0,self.n_blocks)):
+            fiber_batch_mask = self.mask[i].view(self.c, 1, 1).repeat(z.shape[0], 1 , 1, 1)
+            z_ = fiber_batch_mask * z
+            z_ = enn.GeometricTensor(z_, self.input_type)
+            # ipdb.set_trace()
+            # self.check_invariance(self.group_action_type, self.input_type,
+                                  # z_, self.s[i])
+            # self.check_equivariance(self.group_action_type, self.input_type,
+                                  # z_, self.s[i])
+            s = self.s[i](z_).tensor
+            t = self.t[i](z_).tensor
+            inverse_fiber_batch_mask = (1- self.mask[i]).view(self.c, 1, 1).repeat(z.shape[0], 1 , 1, 1)
+            z = inverse_fiber_batch_mask * (z - t) * torch.exp((-1.* s)) + z_.tensor
+            log_det_J -= (inverse_fiber_batch_mask*s).sum(dim=(1,2,3))
+        return z.squeeze(), log_det_J.view(-1, 1)
+
+    def log_prob(self, inputs, beta=1.):
+        z, delta_logp = self.forward(inputs)
+        # compute log p(z)
+        logpz = standard_normal_logprob(z).view(z.size(0), -1).sum(1, keepdim=True)
+        logpx = logpz - beta * delta_logp
+        # loss = -torch.mean(logpx)
+        # return loss, torch.mean(logpz), torch.mean(-delta_logp), None
+        # print("NLL %f " % (-loss.item()))
+        return logpx, logpz, -1*delta_logp
+
+    def compute_loss(self, args, inputs, beta=1.):
+        bits_per_dim, logits_tensor = torch.zeros(1).to(inputs), torch.zeros(args.n_classes).to(inputs)
+        logpz, delta_logp = torch.zeros(1).to(inputs), torch.zeros(1).to(inputs)
+        # z, _ = self.forward(inputs)
+        # x = self.inverse(z)
+        if args.dataset == 'celeba_5bit':
+            nvals = 32
+        elif args.dataset == 'celebahq':
+            nvals = 2**args.nbits
+        else:
+            nvals = 256
+
+        # z, _ = self.forward(inputs)
+        # x, _ = self.inverse(z)
+        _, logpz, delta_logp = self.log_prob(inputs, beta)
+
+        # log p(x)
+        logpx = logpz - beta * delta_logp - np.log(nvals) * (
+            args.imagesize * args.imagesize * (args.im_dim + args.padding)
+        )
+        bits_per_dim = -torch.mean(logpx) / (args.imagesize *
+                                             args.imagesize * args.im_dim) / np.log(2)
+
+        logpz = torch.mean(logpz).detach()
+        delta_logp = torch.mean(-delta_logp).detach()
+        return bits_per_dim, logits_tensor, logpz, delta_logp, _
+
+    def sample(self, batchSize):
+        # TODO: Update this method for edge_index
+        z = self.prior.sample((batchSize, 1))
+        logp = self.prior.log_prob(z)
+        x = self.inverse(z)
+        return x
+
+    def check_equivariance(self, r2_act, out_type, data, func, data_type=None):
+        _, c, h, w = data.shape
+        input_type = enn.FieldType(r2_act, self.c*[r2_act.trivial_repr])
+        for g in r2_act.testing_elements:
+            output = func(data)
+            rg_output = enn.GeometricTensor(output.tensor.view(-1, c, h, w).cpu(),
+                                         out_type).transform(g)
+            data = enn.GeometricTensor(data.tensor.view(-1, c, h, w).cpu(), input_type)
+            x_transformed = enn.GeometricTensor(data.transform(g).tensor.view(-1, c, h, w).cuda(), input_type)
+
+            output_rg = func(x_transformed)
+            # Equivariance Condition
+            output_rg = enn.GeometricTensor(output_rg.tensor.cpu(), out_type)
+            data = enn.GeometricTensor(data.tensor.squeeze().view(-1, c, h , w).cuda(), input_type)
+            assert torch.allclose(rg_output.tensor.cpu().squeeze(), output_rg.tensor.squeeze(), atol=1e-5), g
+        print("Passed Equivariance Test")
+
+    def check_invariance(self, r2_act, out_type, data, func, data_type=None):
+        _, c, h, w = data.shape
+        input_type = enn.FieldType(r2_act, self.c*[r2_act.trivial_repr])
+        y = func(data)
+        ipdb.set_trace()
+        for g in r2_act.testing_elements:
+            data = enn.GeometricTensor(data.tensor.view(-1, c, h, w).cpu(), input_type)
+            x_transformed = enn.GeometricTensor(data.transform(g).tensor.view(-1, c, h, w).cuda(), input_type)
+
+            y_from_x_transformed = func(x_transformed)
+
+            y_transformed_from_x = y
+            # Invariance Condition
+            data = enn.GeometricTensor(data.tensor.squeeze().view(-1, c, h , w).cuda(), input_type)
+            # assert torch.allclose(output_conv.squeeze(), output_rg_conv.squeeze(), atol=1e-5), g
+            print_y = y_from_x_transformed.tensor.detach().to('cpu').numpy().squeeze()
+
+            print("{:4d} : {}".format(g, print_y))
+
+            assert torch.allclose(y_from_x_transformed.tensor.squeeze(), y_transformed_from_x.tensor.squeeze(), atol=1e-5), g
+        print("Passed Invariance Test")
 
 ## Inspired from: https://github.com/senya-ashukha/real-nvp-pytorch/blob/master/real-nvp-pytorch.ipynb
 class FiberRealNVP(nn.Module):
@@ -124,11 +305,11 @@ class FiberRealNVP(nn.Module):
     def forward(self, x, inverse=False):
         if inverse:
             return self.inverse(x)
-
+        ipdb.set_trace()
         log_det_J, z = x.new_zeros(x.shape[0]), x.view(-1, self.c, self.h, self.w)
-        # my_x = enn.GeometricTensor(x, self.input_type)
-        # self.check_equivariance(self.group_action_type, self.input_type, my_x,
-                                # self.dummy_func)
+        my_x = enn.GeometricTensor(x, self.input_type)
+        self.check_equivariance(self.group_action_type, self.input_type, my_x,
+                                self.dummy_func)
         for i in reversed(range(0,self.n_blocks)):
             # ipdb.set_trace()
             fiber_batch_mask = self.mask[i].view(self.c, 1, 1).repeat(z.shape[0], 1 , 1, 1)
@@ -176,7 +357,7 @@ class FiberRealNVP(nn.Module):
 
         logpz = torch.mean(logpz).detach()
         delta_logp = torch.mean(-delta_logp).detach()
-        return bits_per_dim, logits_tensor, logpz, delta_logp
+        return bits_per_dim, logits_tensor, logpz, delta_logp, _
 
     def sample(self, batchSize):
         # TODO: Update this method for edge_index

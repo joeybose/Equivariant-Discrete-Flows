@@ -18,8 +18,9 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib import cm
 from tqdm import tqdm
-from utils import utils
-from utils.utils import seed_everything, str2bool, visualize_transform
+# from utils import utils
+# from utils.utils import seed_everything, str2bool, visualize_transform
+from utils.utils import *
 from data import create_dataset
 from data.toy_data import sample_2d_data
 from flows import create_flow
@@ -30,10 +31,10 @@ def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 def train_flow(args, flow, optim):
-    time_meter = utils.RunningAverageMeter(0.93)
-    loss_meter = utils.RunningAverageMeter(0.93)
-    logpz_meter = utils.RunningAverageMeter(0.93)
-    delta_logp_meter = utils.RunningAverageMeter(0.93)
+    time_meter = RunningAverageMeter(0.93)
+    loss_meter = RunningAverageMeter(0.93)
+    logpz_meter = RunningAverageMeter(0.93)
+    delta_logp_meter = RunningAverageMeter(0.93)
     end = time.time()
     flow.train()
     for i in range(args.num_iters):
@@ -112,7 +113,8 @@ if __name__ == '__main__':
     parser.add_argument('--input_size', type=int, default=2, help='Dimension of the data.')
     parser.add_argument('--hidden_dim', type=int, default=32, help='Dimensions of hidden layers.')
     parser.add_argument('--num_layers', type=int, default=1, help='Number of hidden layers.')
-    parser.add_argument('--n_blocks', type=int, default=1, help='Number of blocks.')
+    # parser.add_argument('--n_blocks', type=int, default=1, help='Number of blocks.')
+    parser.add_argument('--n_blocks', type=str, default='1')
     # i-Resnet params
     parser.add_argument('--coeff', type=float, default=0.9)
     parser.add_argument('--vnorms', type=str, default='222222')
@@ -124,7 +126,7 @@ if __name__ == '__main__':
     parser.add_argument('--beta', type=float, default=1.0)
 
     parser.add_argument('--dims', type=str, default='128-128-128-128')
-    parser.add_argument('--act', type=str, default='swish')
+    parser.add_argument('--act', type=str, default='elu')
     parser.add_argument('--group', type=str, default='fliprot4', help='The choice of group representation for Equivariance')
     parser.add_argument('--brute-force', type=eval, choices=[True, False], default=False)
     parser.add_argument('--actnorm', type=eval, choices=[True, False], default=False)
@@ -147,5 +149,5 @@ if __name__ == '__main__':
     # Check if settings file
 
     args.dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    project_name = utils.project_name(args.dataset)
+    project_name = project_name(args.dataset)
     main(args)

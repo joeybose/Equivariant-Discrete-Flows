@@ -345,7 +345,7 @@ def plt_flow_density(prior_logdensity, inverse_transform, ax, npts=100, memory=1
     z, delta_logp = [], []
     inds = torch.arange(0, x.shape[0]).to(torch.int64)
     for ii in torch.split(inds, int(memory**2)):
-        z_, delta_logp_ = inverse_transform(x[ii], zeros[ii])
+        z_, delta_logp_ = inverse_transform(x[ii].view(-1, 1, 1, 2), zeros[ii])
         if not torch.is_tensor(z_):
             z_ = z_.tensor.squeeze()
         z.append(z_)

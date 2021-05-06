@@ -543,4 +543,6 @@ def get_equivar_conv2d(
     elif codomain == float('inf'):
         if domain in [2, float('inf')]:
             _conv2d = LopConv2d
-    return _conv2d(in_type, out_type, group_action_type, kernel_size, stride, padding, bias, coeff, domain, codomain, **kwargs)
+    equivar_conv = _conv2d(in_type, out_type, group_action_type, kernel_size, stride, padding, bias, coeff, domain, codomain, **kwargs)
+    # return nn.utils.spectral_norm(equivar_conv, n_power_iterations=1000)
+    return equivar_conv

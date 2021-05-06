@@ -35,6 +35,13 @@ warnings.filterwarnings("ignore")
 
 criterion = torch.nn.CrossEntropyLoss()
 
+def check_invertibility(flow_model, x, z):
+    with torch.no_grad():
+        inv = flow_model.forward(z, inverse=True)
+        assert torch.allclose(x, inv, atol=1e-4)
+        print("Passed Invertibility Test")
+
+
 def do_train_epoch(args, epoch, flow_model, optim, train_loader, meters):
     flow_model.train()
     total = 0
@@ -43,7 +50,8 @@ def do_train_epoch(args, epoch, flow_model, optim, train_loader, meters):
     batch_time, bpd_meter, logpz_meter, deltalogp_meter, firmom_meter, secmom_meter, gnorm_meter, ce_meter, ema = meters[:]
     for i, (x, y) in enumerate(train_loader):
         global_itr = epoch * len(train_loader) + i
-        utils.update_lr(args, optim, global_itr)
+        if args.update_lr:
+            utils.update_lr(args, optim, global_itr)
 
         # Training procedure:
         # for each sample x:
@@ -56,7 +64,20 @@ def do_train_epoch(args, epoch, flow_model, optim, train_loader, meters):
             flow_model.update_lipschitz()
 
         beta = beta = min(1, global_itr / args.annealing_iters) if args.annealing_iters > 0 else 1.
-        bpd, logits, logpz, neg_delta_logp = flow_model.compute_loss(args, x, beta=beta)
+        bpd, logits, logpz, neg_delta_logp, z = flow_model.compute_loss(args, x, beta=beta)
+        # check_invertibility(flow_model, x, z)
+
+        if bpd < 0:
+            z_out = z.detach()
+            del bpd
+            del logits
+            del logpz
+            del neg_delta_logp
+            del z
+            torch.cuda.empty_cache()
+            with torch.no_grad():
+                ipdb.set_trace()
+                inv = flow_model.forward(z_out, inverse=True)
 
         if args.task in ['density', 'hybrid']:
             firmom, secmom = utils.estimator_moments(flow_model)
@@ -102,7 +123,7 @@ def do_train_epoch(args, epoch, flow_model, optim, train_loader, meters):
         optim.zero_grad()
         if 'resflow' in args.model_type:
             flow_model.update_lipschitz()
-        ema.apply()
+        # ema.apply()
 
         gnorm_meter.update(grad_norm)
 
@@ -153,8 +174,8 @@ def validate(args, epoch, flow_model, test_loader, ema=None):
     bpd_meter = utils.AverageMeter()
     ce_meter = utils.AverageMeter()
 
-    if ema is not None:
-        ema.swap()
+    # if ema is not None:
+        # ema.swap()
 
     if 'resflow' in args.model_type:
         flow_model.update_lipschitz()
@@ -169,7 +190,7 @@ def validate(args, epoch, flow_model, test_loader, ema=None):
     with torch.no_grad():
         for i, (x, y) in enumerate(tqdm(test_loader)):
             x = x.to(args.dev)
-            bpd, logits, _, _ = flow_model.compute_loss(args, x)
+            bpd, logits, _, _, _ = flow_model.compute_loss(args, x)
             bpd_meter.update(bpd.item(), x.size(0))
 
             if args.task in ['classification', 'hybrid']:
@@ -181,8 +202,8 @@ def validate(args, epoch, flow_model, test_loader, ema=None):
                 correct += predicted.eq(y).sum().item()
     val_time = time.time() - start
 
-    if ema is not None:
-        ema.swap()
+    # if ema is not None:
+        # ema.swap()
     s = 'Epoch: [{0}]\tTime {1:.2f} | Test bits/dim {bpd_meter.avg:.4f}'.format(epoch, val_time, bpd_meter=bpd_meter)
     if args.wandb:
         wandb.log({'Test BPD': bpd_meter.avg})
@@ -211,7 +232,8 @@ def train_flow(args, flow, optim, scheduler, train_loader, test_loader):
     for epoch in range(args.num_iters):
 
         print('Current LR {}'.format(optim.param_groups[0]['lr']))
-
+        # if epoch > 1:
+            # ipdb.set_trace()
         do_train_epoch(args, epoch, flow, optim, train_loader, meters)
         if 'resflow' in args.model_type:
             lipschitz_constants.append(flow.get_lipschitz_constants())
@@ -222,8 +244,8 @@ def train_flow(args, flow, optim, scheduler, train_loader, test_loader):
         else:
             test_bpd = validate(args, epoch, flow, test_loader)
 
-        if args.scheduler and scheduler is not None:
-            scheduler.step()
+        # if args.scheduler and scheduler is not None:
+            # scheduler.step()
 
     test_bpd = validate(args, epoch, flow, test_loader)
 
@@ -251,7 +273,6 @@ def main(args):
     print("Number of trainable parameters: {}".format(utils.count_parameters(flow)))
 
     scheduler = None
-
     if args.optimizer == 'adam':
         optimizer = optim.Adam(flow.parameters(), lr=args.lr, betas=(0.9, 0.99), weight_decay=args.wd)
         if args.scheduler: scheduler = utils.CosineAnnealingWarmRestarts(optimizer, 20, T_mult=2, last_epoch=args.begin_epoch - 1)
@@ -306,7 +327,7 @@ if __name__ == '__main__':
     parser.add_argument('--fc-end', type=eval, choices=[True, False], default=True)
     parser.add_argument('--fc-idim', type=int, default=128)
     parser.add_argument('--preact', type=eval, choices=[True, False], default=True)
-    parser.add_argument('--padding', type=int, default=0)
+    parser.add_argument('--padding', type=int, default=1)
     parser.add_argument('--realnvp-padding', type=int, default=1)
     parser.add_argument('--first-resblock', type=eval, choices=[True, False], default=True)
     parser.add_argument('--cdim', type=int, default=256)
@@ -345,6 +366,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--task', type=str, choices=['density', 'classification', 'hybrid'], default='density')
     parser.add_argument('--scale-dim', type=eval, choices=[True, False], default=False)
+    parser.add_argument('--update-lr', type=eval, choices=[True, False], default=True)
     parser.add_argument('--rcrop-pad-mode', type=str, choices=['constant', 'reflect'], default='reflect')
     parser.add_argument('--padding-dist', type=str, choices=['uniform', 'gaussian'], default='uniform')
 

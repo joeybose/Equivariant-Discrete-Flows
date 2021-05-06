@@ -485,7 +485,7 @@ class InducedNormEquivarConv2d(nn.Module):
                     else:
                         self.u.copy_(normalize_u(torch.randn(num_output_dim).to(self.weight), codomain))
                         self.v.copy_(normalize_v(torch.randn(num_input_dim).to(self.weight), domain))
-                    self.compute_weight(True, n_iterations=400)
+                    self.compute_weight(True, n_iterations=10000)
                     if self.scale > best_scale:
                         best_u, best_v = self.u.clone(), self.v.clone()
             self.u.copy_(best_u)
@@ -538,7 +538,7 @@ class InducedNormEquivarConv2d(nn.Module):
         if n_iterations is None and (atol is None or rtol is None):
             raise ValueError('Need one of n_iteration or (atol, rtol).')
 
-        max_itrs = 400
+        max_itrs = 10000
         if n_iterations is not None:
             max_itrs = n_iterations
 
@@ -573,14 +573,18 @@ class InducedNormEquivarConv2d(nn.Module):
                         self.u.copy_(u)
                     u = u.clone()
                     v = v.clone()
+                if _ >= max_itrs - 1:
+                    print("1x1 failed max iters %d" % (_))
+                    # ipdb.set_trace()
 
         sigma = torch.dot(u, torch.mv(weight.squeeze(), v))
         with torch.no_grad():
             self.scale.copy_(sigma)
         # soft normalization: only when sigma larger than coeff
         factor = torch.max(torch.ones(1).to(weight.device), sigma / self.coeff)
-        weight = weight / factor
-        return weight.view(self.out_channels, self.in_channels, 1, 1), expanded_bias
+        self.weight = weight / factor
+        self.bias = expanded_bias
+        return self.weight.view(self.out_channels, self.in_channels, 1, 1), self.bias
 
     def _compute_weight_kxk(self, update=True, n_iterations=None, atol=None, rtol=None):
         n_iterations = self.n_iterations if n_iterations is None else n_iterations
@@ -590,7 +594,7 @@ class InducedNormEquivarConv2d(nn.Module):
         if n_iterations is None and (atol is None or rtol is None):
             raise ValueError('Need one of n_iteration or (atol, rtol).')
 
-        max_itrs = 400
+        max_itrs = 10000
         if n_iterations is not None:
             max_itrs = n_iterations
 
@@ -622,8 +626,14 @@ class InducedNormEquivarConv2d(nn.Module):
                         err_v = torch.norm(v - old_v) / (v.nelement()**0.5)
                         tol_u = atol + rtol * torch.max(u)
                         tol_v = atol + rtol * torch.max(v)
+                        # if _ >= max_itrs - 1:
+                            # print("kxk failed max iters %d Err u %f | Err v %f" % (_, err_u, err_v))
+                            # ipdb.set_trace()
                         if err_u < tol_u and err_v < tol_v:
+                        # if err_u <= tol_u and err_v <= tol_v:
                             break
+                # print("kxk ran for iters %d" % (_))
+
                 if itrs_used > 0:
                     if domain != 2:
                         self.v.copy_(v)
@@ -639,12 +649,14 @@ class InducedNormEquivarConv2d(nn.Module):
             self.scale.copy_(sigma)
         # soft normalization: only when sigma larger than coeff
         factor = torch.max(torch.ones(1).to(weight.device), sigma / self.coeff)
-        weight = weight / factor
-        return weight, expanded_bias
+        self.weight = weight / factor
+        self.bias = expanded_bias
+        return self.weight, self.bias
 
     def forward(self, input):
         if not self.initialized: self.spatial_dims.copy_(torch.tensor(input.shape[2:4]).to(self.spatial_dims))
-        weight, expanded_bias = self.compute_weight(update=False)
+        # weight, expanded_bias = self.compute_weight(update=False)
+        weight, expanded_bias = self.compute_weight(update=True)
         is_this_a_tensor = torch.is_tensor(input)
         if is_this_a_tensor:
             output = F.conv2d(input, weight, expanded_bias, self.stride, self.padding, 1, 1)

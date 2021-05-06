@@ -9,13 +9,18 @@ import ipdb
 
 kwargs_flows = {'MAFRealNVP': MAFRealNVP, 'RealNVP': RealNVP, "Toy": toy_flow,
                 "Simple":package_realnvp, "toy_resflow": ToyResFlow, "resflow":
-                ResidualFlow, "FiberRealNVP": FiberRealNVP, "E_toy_resflow":
-                EquivariantToyResFlow, "resflow": ResidualFlow, "E_resflow":
-                EquivariantResidualFlow, "E_convexp": EquivariantConvExp}
+                ResidualFlow, "E_realnvp": EquivariantRealNVP, "FiberRealNVP":
+                FiberRealNVP, "E_toy_resflow": EquivariantToyResFlow,
+                "resflow": ResidualFlow, "E_resflow": EquivariantResidualFlow,
+                "E_convexp": EquivariantConvExp}
 
 def create_flow(arg_parse: argparse.Namespace, model_type: str, *args: Any, **kwargs: Any):
-    # if arg_parse.dataset in ["8gaussians", "2spirals", "checkerboard", "rings", "pinwheel", "swissroll", "circles", "line", "cos"]:
-    if 'resflow' not in model_type:
+    if arg_parse.dataset in ["8gaussians", "2spirals", "checkerboard", "rings", "pinwheel", "swissroll", "circles", "line", "cos"]:
+        flow_model = kwargs_flows[model_type](arg_parse, int(arg_parse.n_blocks),
+                                              arg_parse.input_size,
+                                              arg_parse.hidden_dim,
+                                              arg_parse.num_layers).to(arg_parse.dev)
+    elif 'resflow' not in model_type:
         flow_model = kwargs_flows[model_type](arg_parse, arg_parse.n_blocks,
                                               arg_parse.input_size,
                                               arg_parse.hidden_dim,

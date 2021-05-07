@@ -16,7 +16,7 @@ import numpy as np
 import copy
 import flows.layers.base as base_layers
 import flows.layers as layers
-from flows.invariant_maps import InvariantCNNBlock, InvariantCNNBlock2
+from flows.invariant_maps import InvariantCNNBlock, InvariantCNNBlock2, MnistInvariantCNNBlock
 import ipdb
 from e2cnn import gspaces
 from e2cnn import nn as enn
@@ -111,10 +111,16 @@ def create_invariant_real_nvp_blocks(input_size, in_type, field_type,
     for i in range(n_blocks):
         # s_block = InvariantCNNBlock(input_size, in_type, field_type,
                                       # out_fiber, activation_fn, hidden_size,
-                                      # group_action_type)
-        s_block = InvariantCNNBlock2(input_size, in_type, field_type,
-                                      out_fiber, activation_fn, hidden_size,
-                                      group_action_type)
+                                     # group_action_type)
+        # Cifar
+        if c > 2:
+            s_block = InvariantCNNBlock2(input_size, in_type, field_type,
+                                          out_fiber, activation_fn, hidden_size,
+                                          group_action_type)
+        else:
+            s_block = MnistInvariantCNNBlock(input_size, in_type, field_type,
+                                          out_fiber, activation_fn, hidden_size,
+                                          group_action_type)
         nets +=[s_block]
 
     s = nets = MultiInputSequential(*nets)

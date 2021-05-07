@@ -9,6 +9,7 @@ from e2cnn import nn as enn
 from utils import utils
 import flows.layers.base as base_layers
 import flows.layers as layers
+from flows.flow_utils import *
 import ipdb
 
 ACT_FNS = {
@@ -34,14 +35,14 @@ GROUPS = {
     'o2': gspaces.FlipRot2dOnR2(N=-1, maximum_frequency=10),
 }
 
-# FIBERS = {
-    # "trivial": utils.trivial_fiber,
-    # "quotient": utils.quotient_fiber,
-    # "regular": utils.regular_fiber,
-    # "irrep": utils.irrep_fiber,
-    # "mixed1": utils.mixed1_fiber,
-    # "mixed2": utils.mixed2_fiber,
-# }
+FIBERS = {
+    "trivial": trivial_fiber,
+    "quotient": quotient_fiber,
+    "regular": regular_fiber,
+    "irrep": irrep_fiber,
+    "mixed1": mixed1_fiber,
+    "mixed2": mixed2_fiber,
+}
 
 def standard_normal_logprob(z):
     logZ = -0.5 * math.log(2 * math.pi)

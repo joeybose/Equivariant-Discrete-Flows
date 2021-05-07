@@ -16,7 +16,10 @@ def create_dataset(arg_parse: argparse.Namespace, dataset_type: str, *args: Any,
     elif dataset_type in ["u1", "u2", "u3", "u4"]:
         return potential_fn(dataset_type)
     elif dataset_type == "mnist_rot":
-        arg_parse.im_dim = 1
+        if arg_parse.double_padding:
+            arg_parse.im_dim = 2
+        else:
+            arg_parse.im_dim = 1
         arg_parse.n_classes = 10
         if arg_parse.validation:
             train_loader, _, _ = data_loader_mnist_rot.build_mnist_rot_loader("train",
@@ -46,7 +49,10 @@ def create_dataset(arg_parse: argparse.Namespace, dataset_type: str, *args: Any,
                                                                                         rot_interpol_augmentation=False)
         return train_loader, test_loader
     elif dataset_type == "mnist_fliprot":
-        arg_parse.im_dim = 1
+        if arg_parse.double_padding:
+            arg_parse.im_dim = 2
+        else:
+            arg_parse.im_dim = 1
         arg_parse.n_classes = 10
         if arg_parse.validation:
             train_loader, _, _ = data_loader_mnist_fliprot.build_mnist_rot_loader("train",
@@ -76,7 +82,10 @@ def create_dataset(arg_parse: argparse.Namespace, dataset_type: str, *args: Any,
                                                                                             rot_interpol_augmentation=False)
         return train_loader, test_loader
     elif dataset_type == "mnist12k":
-        arg_parse.im_dim = 1
+        if arg_parse.double_padding:
+            arg_parse.im_dim = 2
+        else:
+            arg_parse.im_dim = 1
         arg_parse.n_classes = 10
         if arg_parse.validation:
             train_loader, _, _ = data_loader_mnist12k.build_mnist12k_loader("train",

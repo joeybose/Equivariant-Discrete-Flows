@@ -50,6 +50,9 @@ def add_padding(args, x, nvals=256):
             return torch.cat([x, u / nvals], dim=1), logpu
         else:
             raise ValueError()
+    elif args.double_padding:
+        x = x.repeat(1, 2, 1, 1)
+        return x, torch.zeros(x.shape[0], 1).to(x)
     else:
         return x, torch.zeros(x.shape[0], 1).to(x)
 
@@ -227,7 +230,7 @@ class RealNVP(nn.Module):
 
         logpz = torch.mean(logpz).detach()
         delta_logp = torch.mean(-delta_logp).detach()
-        return bits_per_dim, logits_tensor, logpz, delta_logp
+        return bits_per_dim, logits_tensor, logpz, delta_logp, _
 
     def sample(self, batchSize):
         # TODO: Update this method for edge_index

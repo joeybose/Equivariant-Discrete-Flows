@@ -64,6 +64,9 @@ def add_padding(args, x, nvals=256):
             return torch.cat([x, u / nvals], dim=1), logpu
         else:
             raise ValueError()
+    elif args.double_padding:
+        x = x.repeat(1, 2, 1, 1)
+        return x, torch.zeros(x.shape[0], 1).to(x)
     else:
         return x, torch.zeros(x.shape[0], 1).to(x)
 
@@ -185,12 +188,13 @@ class EquivariantRealNVP(nn.Module):
 
         # z, _ = self.forward(inputs)
         # x, _ = self.inverse(z)
-        _, logpz, delta_logp = self.log_prob(inputs, beta)
+        padded_inputs, logpu = add_padding(args, inputs, nvals)
+        _, logpz, delta_logp = self.log_prob(padded_inputs, beta)
 
         # log p(x)
         logpx = logpz - beta * delta_logp - np.log(nvals) * (
             args.imagesize * args.imagesize * (args.im_dim + args.padding)
-        )
+        ) - logpu
         bits_per_dim = -torch.mean(logpx) / (args.imagesize *
                                              args.imagesize * args.im_dim) / np.log(2)
 
@@ -226,7 +230,6 @@ class EquivariantRealNVP(nn.Module):
         _, c, h, w = data.shape
         input_type = enn.FieldType(r2_act, self.c*[r2_act.trivial_repr])
         y = func(data)
-        ipdb.set_trace()
         for g in r2_act.testing_elements:
             data = enn.GeometricTensor(data.tensor.view(-1, c, h, w).cpu(), input_type)
             x_transformed = enn.GeometricTensor(data.transform(g).tensor.view(-1, c, h, w).cuda(), input_type)
@@ -305,13 +308,11 @@ class FiberRealNVP(nn.Module):
     def forward(self, x, inverse=False):
         if inverse:
             return self.inverse(x)
-        ipdb.set_trace()
         log_det_J, z = x.new_zeros(x.shape[0]), x.view(-1, self.c, self.h, self.w)
-        my_x = enn.GeometricTensor(x, self.input_type)
-        self.check_equivariance(self.group_action_type, self.input_type, my_x,
-                                self.dummy_func)
+        # my_x = enn.GeometricTensor(x, self.input_type)
+        # self.check_equivariance(self.group_action_type, self.input_type, my_x,
+                                # self.dummy_func)
         for i in reversed(range(0,self.n_blocks)):
-            # ipdb.set_trace()
             fiber_batch_mask = self.mask[i].view(self.c, 1, 1).repeat(z.shape[0], 1 , 1, 1)
             z_ = fiber_batch_mask * z
             z_ = enn.GeometricTensor(z_, self.input_type)
@@ -346,12 +347,13 @@ class FiberRealNVP(nn.Module):
 
         # z, _ = self.forward(inputs)
         # x, _ = self.inverse(z)
-        _, logpz, delta_logp = self.log_prob(inputs, beta)
+        padded_inputs, logpu = add_padding(args, inputs, nvals)
+        _, logpz, delta_logp = self.log_prob(padded_inputs, beta)
 
         # log p(x)
         logpx = logpz - beta * delta_logp - np.log(nvals) * (
             args.imagesize * args.imagesize * (args.im_dim + args.padding)
-        )
+        ) - logpu
         bits_per_dim = -torch.mean(logpx) / (args.imagesize *
                                              args.imagesize * args.im_dim) / np.log(2)
 

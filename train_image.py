@@ -358,7 +358,7 @@ if __name__ == '__main__':
     parser.add_argument('--wd', help='Weight decay', type=float, default=0)
     parser.add_argument('--warmup-iters', type=int, default=1000)
     parser.add_argument('--annealing-iters', type=int, default=0)
-    parser.add_argument('--save', help='directory to save results', type=str, default='figures/experiment1')
+    parser.add_argument('--save', help='directory to save results', type=str, default='figures/mnist_doublepad')
     parser.add_argument('--val-batchsize', help='minibatch size', type=int, default=200)
     parser.add_argument('--validation', type=eval, choices=[True, False], default=True)
     parser.add_argument('--ema-val', type=eval, choices=[True, False], default=True)
@@ -369,6 +369,7 @@ if __name__ == '__main__':
     parser.add_argument('--update-lr', type=eval, choices=[True, False], default=True)
     parser.add_argument('--rcrop-pad-mode', type=str, choices=['constant', 'reflect'], default='reflect')
     parser.add_argument('--padding-dist', type=str, choices=['uniform', 'gaussian'], default='uniform')
+    parser.add_argument('--double-padding', type=eval, choices=[True, False], default=False)
 
     parser.add_argument('--resume', type=str, default=None)
     parser.add_argument('--begin-epoch', type=int, default=0)

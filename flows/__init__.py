@@ -4,6 +4,7 @@ from .equivariant_flows import *
 from .toy_resflow import *
 from .resflow import *
 from .equivariant_resflow import *
+from .invariant_maps import *
 import argparse
 import ipdb
 

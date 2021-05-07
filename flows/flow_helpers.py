@@ -6,7 +6,7 @@ import torchvision.transforms as T
 import torch.nn.init as init
 
 # from utils.utils import MultiInputSequential
-from utils import utils
+# from utils.utils import *
 import math
 import os
 import math
@@ -16,22 +16,23 @@ import numpy as np
 import copy
 import flows.layers.base as base_layers
 import flows.layers as layers
-from flows.invariant_maps import InvariantCNNBlock, InvariantCNNBlock2, InvariantCNNBlock3
+from flows.invariant_maps import InvariantCNNBlock, InvariantCNNBlock2
 import ipdb
 from e2cnn import gspaces
 from e2cnn import nn as enn
+from flows.flow_utils import *
 # --------------------
 # Model layers and helpers
 # --------------------
 
-# FIBERS = {
-    # "trivial": utils.trivial_fiber,
-    # "quotient": utils.quotient_fiber,
-    # "regular": utils.regular_fiber,
-    # "irrep": utils.irrep_fiber,
-    # "mixed1": utils.mixed1_fiber,
-    # "mixed2": utils.mixed2_fiber,
-# }
+FIBERS = {
+    "trivial": trivial_fiber,
+    "quotient": quotient_fiber,
+    "regular": regular_fiber,
+    "irrep": irrep_fiber,
+    "mixed1": mixed1_fiber,
+    "mixed2": mixed2_fiber,
+}
 
 kwargs_layer = {'Linear': nn.Linear, 'Conv': nn.Conv2d}
 
@@ -111,7 +112,7 @@ def create_invariant_real_nvp_blocks(input_size, in_type, field_type,
         # s_block = InvariantCNNBlock(input_size, in_type, field_type,
                                       # out_fiber, activation_fn, hidden_size,
                                       # group_action_type)
-        s_block = InvariantCNNBlock3(input_size, in_type, field_type,
+        s_block = InvariantCNNBlock2(input_size, in_type, field_type,
                                       out_fiber, activation_fn, hidden_size,
                                       group_action_type)
         nets +=[s_block]
@@ -473,3 +474,4 @@ def convergence_scale(c, kernel_size):
     d = C_in * K1 * K2
 
     return c / d
+

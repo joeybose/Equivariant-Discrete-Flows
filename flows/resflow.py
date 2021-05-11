@@ -274,6 +274,22 @@ class ResidualFlow(nn.Module):
                     z, logpz = self.transforms[idx].inverse(z, logpz)
             return z if logpz is None else (z, logpz)
 
+    def check_invertibility(self, args, x):
+        if args.dataset == 'celeba_5bit':
+            nvals = 32
+        elif args.dataset == 'celebahq':
+            nvals = 2**args.nbits
+        else:
+            nvals = 256
+        x, logpu = add_padding(args, x, nvals)
+        z, delta_logp = self.forward(x.view(-1, *args.input_size[1:]), 0)
+        inv = self.forward(z.view(-1, *args.input_size[1:]), inverse=True)
+
+        atol_list = [1e-1, 1e-2, 1e-3, 1e-4, 1e-5]
+        for atol in atol_list:
+            res = torch.allclose(x, inv, atol)
+            print("Invertiblity at %f: %s" %(atol, str(res)))
+
     def compute_loss(self, args, x, beta=1.0):
         bits_per_dim, logits_tensor = torch.zeros(1).to(x), torch.zeros(args.n_classes).to(x)
         logpz, delta_logp = torch.zeros(1).to(x), torch.zeros(1).to(x)
@@ -314,13 +330,13 @@ class ResidualFlow(nn.Module):
             delta_logp = torch.mean(-delta_logp).detach()
         return bits_per_dim, logits_tensor, logpz, delta_logp, z
 
-    def update_lipschitz(self):
+    def update_lipschitz(self, n_iterations):
         with torch.no_grad():
             for m in self.modules():
                 if isinstance(m, base_layers.SpectralNormConv2d) or isinstance(m, base_layers.SpectralNormLinear):
-                    m.compute_weight(update=True)
+                    m.compute_weight(update=True, n_iterations=n_iterations)
                 if isinstance(m, base_layers.InducedNormConv2d) or isinstance(m, base_layers.InducedNormLinear):
-                    m.compute_weight(update=True)
+                    m.compute_weight(update=True, n_iterations=n_iterations)
 
     def get_lipschitz_constants(self):
         lipschitz_constants = []
@@ -487,7 +503,7 @@ class StackediResBlocks(layers.SequentialFlow):
         if init_layer is not None: chain.append(init_layer)
         if first_resblock and actnorm: chain.append(_actnorm(initial_size, fc))
         if first_resblock and fc_actnorm: chain.append(_actnorm(initial_size, True))
-
+        ipdb.set_trace()
         if squeeze:
             c, h, w = initial_size
             for i in range(n_blocks):

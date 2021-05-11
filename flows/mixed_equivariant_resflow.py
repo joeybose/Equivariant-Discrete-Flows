@@ -66,7 +66,7 @@ def add_padding(args, x, nvals=256):
         return x, torch.zeros(x.shape[0], 1).to(x)
 
 
-class EquivariantResidualFlow(nn.Module):
+class MixedResidualFlow(nn.Module):
 
     def __init__(
         self,
@@ -106,7 +106,7 @@ class EquivariantResidualFlow(nn.Module):
         block_type='resblock',
         group_action_type=None,
     ):
-        super(EquivariantResidualFlow, self).__init__()
+        super(MixedResidualFlow, self).__init__()
         self.args = args
         self.n_scale = min(len(n_blocks), self._calc_n_scale(input_size))
         _, self.c, self.h, self.w = input_size[:]
@@ -299,7 +299,10 @@ class EquivariantResidualFlow(nn.Module):
                 else:
                     class_outs.append(self.classification_heads[idx](x))
 
-        out.append(x.tensor.squeeze())
+        if not torch.is_tensor(x):
+            out.append(x.tensor.squeeze())
+        else:
+            out.append(x.squeeze())
         out = torch.cat([o.view(o.size()[0], -1) for o in out], 1)
         output = out if logpx is None else (out, logpx)
         if classify:
@@ -487,12 +490,18 @@ class StackediResBlocks(layers.SequentialFlow):
         domains, codomains = ps[:-1], ps[1:]
         assert len(domains) == len(kernels.split('-'))
 
-        def _actnorm(size, fc):
+        def e_actnorm(size, fc):
             if fc:
                 return FCWrapper(layers.EquivariantActNorm1d(size[0] * size[1] * size[2]))
             else:
                 return layers.EquivariantActNorm2d(size)
                 # return layers.EquivariantActNorm2d(size[0]*size[1]*size[2])
+
+        def _actnorm(size, fc):
+            if fc:
+                return FCWrapper(layers.ActNorm1d(size[0] * size[1] * size[2]))
+            else:
+                return layers.ActNorm2d(size[0])
 
         def _quadratic_layer(initial_size, fc):
             if fc:
@@ -502,11 +511,88 @@ class StackediResBlocks(layers.SequentialFlow):
             else:
                 return layers.InvertibleConv2d(initial_size[0])
 
-        def _lipschitz_layer():
-            return base_layers.get_equivar_conv2d
+        def _lipschitz_layer(equivar=True):
+            if equivar:
+                return base_layers.get_equivar_conv2d
+            else:
+                return base_layers.get_conv2d
 
-        def _resblock(initial_size, fc, idim=idim, first_resblock=False,
-                      last_fc_block=False):
+        def _resblock(initial_size, fc, idim=idim, first_resblock=False):
+            if fc:
+                return layers.iResBlock(
+                    FCNet(
+                        input_shape=initial_size,
+                        idim=idim,
+                        lipschitz_layer=_lipschitz_layer(True),
+                        nhidden=len(kernels.split('-')) - 1,
+                        coeff=coeff,
+                        domains=domains,
+                        codomains=codomains,
+                        n_iterations=n_lipschitz_iters,
+                        activation_fn=activation_fn,
+                        preact=preact,
+                        dropout=dropout,
+                        sn_atol=sn_atol,
+                        sn_rtol=sn_rtol,
+                        learn_p=learn_p,
+                    ),
+                    n_power_series=n_power_series,
+                    n_dist=n_dist,
+                    n_samples=n_samples,
+                    n_exact_terms=n_exact_terms,
+                    neumann_grad=neumann_grad,
+                    grad_in_forward=grad_in_forward,
+                )
+            else:
+                ks = list(map(int, kernels.split('-')))
+                if learn_p:
+                    _domains = [nn.Parameter(torch.tensor(0.)) for _ in range(len(ks))]
+                    _codomains = _domains[1:] + [_domains[0]]
+                else:
+                    _domains = domains
+                    _codomains = codomains
+                nnet = []
+                if not first_resblock and preact:
+                    if batchnorm: nnet.append(layers.MovingBatchNorm2d(initial_size[0]))
+                    nnet.append(ACT_FNS[activation_fn](False))
+                nnet.append(
+                    _lipschitz_layer(fc)(
+                        initial_size[0], idim, ks[0], 1, ks[0] // 2, coeff=coeff, n_iterations=n_lipschitz_iters,
+                        domain=_domains[0], codomain=_codomains[0], atol=sn_atol, rtol=sn_rtol
+                    )
+                )
+                if batchnorm: nnet.append(layers.MovingBatchNorm2d(idim))
+                # nnet.append(ACT_FNS[activation_fn](True))
+                nnet.append(base_layers.Swish())
+                for i, k in enumerate(ks[1:-1]):
+                    nnet.append(
+                        _lipschitz_layer(fc)(
+                            idim, idim, k, 1, k // 2, coeff=coeff, n_iterations=n_lipschitz_iters,
+                            domain=_domains[i + 1], codomain=_codomains[i + 1], atol=sn_atol, rtol=sn_rtol
+                        )
+                    )
+                    if batchnorm: nnet.append(layers.MovingBatchNorm2d(idim))
+                    nnet.append(ACT_FNS[activation_fn](True))
+                if dropout: nnet.append(nn.Dropout2d(dropout, inplace=True))
+                nnet.append(
+                    _lipschitz_layer(fc)(
+                        idim, initial_size[0], ks[-1], 1, ks[-1] // 2, coeff=coeff, n_iterations=n_lipschitz_iters,
+                        domain=_domains[-1], codomain=_codomains[-1], atol=sn_atol, rtol=sn_rtol
+                    )
+                )
+                if batchnorm: nnet.append(layers.MovingBatchNorm2d(initial_size[0]))
+                return layers.iResBlock(
+                    nn.Sequential(*nnet),
+                    n_power_series=n_power_series,
+                    n_dist=n_dist,
+                    n_samples=n_samples,
+                    n_exact_terms=n_exact_terms,
+                    neumann_grad=neumann_grad,
+                    grad_in_forward=grad_in_forward,
+                )
+
+        def e_resblock(initial_size, fc, idim=idim, first_resblock=False,
+                      last_fc_block=False, equivar=True):
             if fc:
                 return layers.Equivar_iResBlock(
                     FCNet(
@@ -515,7 +601,7 @@ class StackediResBlocks(layers.SequentialFlow):
                         group_action_type,
                         input_shape=initial_size,
                         idim=idim,
-                        lipschitz_layer=_lipschitz_layer(),
+                        lipschitz_layer=_lipschitz_layer(equivar),
                         nhidden=len(kernels.split('-')) - 1,
                         coeff=coeff,
                         domains=domains,
@@ -549,7 +635,7 @@ class StackediResBlocks(layers.SequentialFlow):
                     if batchnorm: nnet.append(layers.MovingBatchNorm2d(initial_size[0]))
                     # nnet.append(activation_fn(in_type, inplace=True))
                 nnet.append(
-                    _lipschitz_layer()(
+                    _lipschitz_layer(equivar)(
                         in_type, out_type, group_action_type,
                         ks[0], 1, ks[0] // 2, coeff=coeff, n_iterations=n_lipschitz_iters,
                         domain=_domains[0], codomain=_codomains[0], atol=sn_atol, rtol=sn_rtol
@@ -560,7 +646,7 @@ class StackediResBlocks(layers.SequentialFlow):
                 nnet.append(activation_fn(nnet[-1].out_type, inplace=True))
                 for i, k in enumerate(ks[1:-1]):
                     nnet.append(
-                        _lipschitz_layer()(
+                        _lipschitz_layer(equivar)(
                             nnet[-1].out_type, out_type, group_action_type,
                             k, 1, k // 2, coeff=coeff, n_iterations=n_lipschitz_iters,
                             domain=_domains[i + 1], codomain=_codomains[i + 1], atol=sn_atol, rtol=sn_rtol
@@ -571,7 +657,7 @@ class StackediResBlocks(layers.SequentialFlow):
                     # nnet.append(activation_fn(True))
                 if dropout: nnet.append(nn.Dropout2d(dropout, inplace=True))
                 nnet.append(
-                    _lipschitz_layer()(
+                    _lipschitz_layer(equivar)(
                         nnet[-1].out_type, in_type, group_action_type,
                         ks[-1], 1, ks[-1] // 2, coeff=coeff, n_iterations=n_lipschitz_iters,
                         domain=_domains[-1], codomain=_codomains[-1], atol=sn_atol, rtol=sn_rtol
@@ -589,7 +675,7 @@ class StackediResBlocks(layers.SequentialFlow):
                 )
 
         if init_layer is not None: chain.append(init_layer)
-        if first_resblock and actnorm: chain.append(_actnorm(initial_size[0], fc))
+        if first_resblock and actnorm: chain.append(e_actnorm(initial_size[0], fc))
         if first_resblock and fc_actnorm: chain.append(_actnorm(initial_size, True))
         if squeeze:
             c, h, w = initial_size
@@ -602,21 +688,48 @@ class StackediResBlocks(layers.SequentialFlow):
             chain.append(layers.EquivariantSqueezeLayer(2))
         else:
             for _ in range(n_blocks):
-                if quadratic: chain.append(_quadratic_layer(initial_size, fc))
-                chain.append(_resblock(initial_size, fc))
-                act_norm_size = len(chain[-1].nnet[-1].out_type)
-                if actnorm: chain.append(_actnorm(act_norm_size, fc))
-                if fc_actnorm: chain.append(_actnorm(act_norm_size, True))
+                # if _ % 2 != 0:
+                if _ > 0:
+                    equivar = False
+                    if quadratic: chain.append(_quadratic_layer(initial_size, fc,
+                                                                equivar=equivar))
+                    chain.append(_resblock(initial_size, fc))
+                    if actnorm: chain.append(_actnorm(initial_size, fc))
+                    if fc_actnorm: chain.append(_actnorm(initial_size, True))
+                else:
+                    equivar = True
+                    if quadratic: chain.append(_quadratic_layer(initial_size, fc,
+                                                                equivar=equivar))
+                    chain.append(e_resblock(initial_size, fc, equivar=equivar))
+                    act_norm_size = len(chain[-1].nnet[-1].out_type)
+                    if actnorm: chain.append(e_actnorm(act_norm_size, fc))
+                    if fc_actnorm: chain.append(e_actnorm(act_norm_size, True))
             # Use four fully connected layers at the end.
             if fc_end:
                 for _ in range(fc_nblocks):
-                    if _ == fc_nblocks:
-                        chain.append(_resblock(initial_size, True, fc_idim,
-                                               last_fc_block=True))
+                    # if _ % 2 != 0:
+                    if _ > 0:
+                        equivar = False
+                        if _ == fc_nblocks:
+                            chain.append(_resblock(initial_size, True, fc_idim,
+                                                   last_fc_block=True,
+                                                   equivar=equivar))
+                        else:
+                            chain.append(_resblock(initial_size, True, fc_idim,
+                                                   equivar=equivar))
+                        if actnorm or fc_actnorm:
+                            chain.append(_actnorm(initial_size, True))
                     else:
-                        chain.append(_resblock(initial_size, True, fc_idim))
-                    act_norm_size = len(chain[-1].nnet[-1].out_type)
-                    if actnorm or fc_actnorm: chain.append(_actnorm(act_norm_size, True))
+                        equivar = True
+                        if _ == fc_nblocks:
+                            chain.append(e_resblock(initial_size, True, fc_idim,
+                                                   last_fc_block=True,
+                                                   equivar=equivar))
+                        else:
+                            chain.append(e_resblock(initial_size, True, fc_idim,
+                                                   equivar=equivar))
+                        act_norm_size = len(chain[-1].nnet[-1].out_type)
+                        if actnorm or fc_actnorm: chain.append(e_actnorm(act_norm_size, True))
 
         super(StackediResBlocks, self).__init__(chain)
 

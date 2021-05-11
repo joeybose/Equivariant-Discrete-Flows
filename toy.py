@@ -46,16 +46,24 @@ def train_flow(args, flow, optim):
             data = torch.from_numpy(data).type(torch.float32).to(args.dev)
         optim.zero_grad()
         beta = min(1, itr / args.annealing_iters) if args.annealing_iters > 0 else 1.
+        # ipdb.set_trace()
         loss, logpz, delta_logp = flow.log_prob(inputs=data)
+        try:
+            if len(logpz) > 0:
+                logpz = torch.mean(logpz)
+                delta_logp = torch.mean(delta_logp)
+        except:
+            pass
         # loss = -flow.log_prob(inputs=data).mean()
         loss_meter.update(loss.item())
         logpz_meter.update(logpz.item())
         delta_logp_meter.update(delta_logp.item())
 
         loss.backward()
+        # grad_norm = torch.nn.utils.clip_grad.clip_grad_norm_(flow.parameters(), 1.)
         optim.step()
 
-        if args.model_type == 'toy_resflow':
+        if 'resflow' in args.model_type:
             flow.beta = beta
             flow.update_lipschitz(args.n_lipschitz_iters)
             if args.learn_p and itr > args.annealing_iters: flow.compute_p_grads()
@@ -91,6 +99,7 @@ def train_flow(args, flow, optim):
 
 
 def main(args):
+    args.input_size = (args.batch_size, 1, 1, 2)
     flow = create_flow(args, args.model_type)
     print("Number of trainable parameters: {}".format(count_parameters(flow.flow_model)))
     optimizer = optim.Adam(flow.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -108,12 +117,11 @@ if __name__ == '__main__':
     # target density
     parser.add_argument('--model_type', type=str, default="Toy", help='Which Flow to use.')
     parser.add_argument('--dataset', type=str, default=None, help='Which potential function to approximate.')
-    parser.add_argument('--nsamples', type=int, default=500, help='Number of Samples to Use')
+    # parser.add_argument('--nsamples', type=int, default=500, help='Number of Samples to Use')
     # model parameters
     parser.add_argument('--input_size', type=int, default=2, help='Dimension of the data.')
     parser.add_argument('--hidden_dim', type=int, default=32, help='Dimensions of hidden layers.')
     parser.add_argument('--num_layers', type=int, default=1, help='Number of hidden layers.')
-    # parser.add_argument('--n_blocks', type=int, default=1, help='Number of blocks.')
     parser.add_argument('--n_blocks', type=str, default='1')
     # i-Resnet params
     parser.add_argument('--coeff', type=float, default=0.9)
@@ -126,8 +134,12 @@ if __name__ == '__main__':
     parser.add_argument('--beta', type=float, default=1.0)
 
     parser.add_argument('--dims', type=str, default='128-128-128-128')
-    parser.add_argument('--act', type=str, default='elu')
+    parser.add_argument('--act', type=str, default='swish')
     parser.add_argument('--group', type=str, default='fliprot4', help='The choice of group representation for Equivariance')
+    parser.add_argument('--out-fiber', type=str, default='regular')
+    parser.add_argument('--field-type', type=int, default=0, help='Only For Continuous groups. Picks the frequency.')
+    parser.add_argument('--kernel_size', type=int, default=3)
+    parser.add_argument('--realnvp-padding', type=int, default=1)
     parser.add_argument('--brute-force', type=eval, choices=[True, False], default=False)
     parser.add_argument('--actnorm', type=eval, choices=[True, False], default=False)
     parser.add_argument('--batchnorm', type=eval, choices=[True, False], default=False)
@@ -136,7 +148,7 @@ if __name__ == '__main__':
     parser.add_argument('--n-dist', choices=['geometric', 'poisson'], default='geometric')
     # training parameters
     parser.add_argument('--log_interval', type=int, default=10, help='How often to save model and samples.')
-    parser.add_argument('--batch_size', type=int, default=500)
+    parser.add_argument('--batch_size', type=int, default=5000)
     parser.add_argument('--test_batch_size', type=int, default=10000)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--weight-decay', type=float, default=1e-5)

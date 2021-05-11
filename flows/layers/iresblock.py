@@ -58,6 +58,8 @@ class iResBlock(nn.Module):
             y = x + self.nnet(x)
             return y
         else:
+            if not torch.is_tensor(x):
+                x = x.tensor
             g, logdetgrad = self._logdetgrad(x)
             return x + g, logpx - logdetgrad
 
@@ -151,6 +153,7 @@ class iResBlock(nn.Module):
                 ############################################
                 x = x.requires_grad_(True)
                 g = self.nnet(x)
+                ipdb.set_trace()
                 jac = batch_jacobian(g, x)
                 logdetgrad = batch_trace(jac)
                 jac_k = jac
@@ -185,7 +188,7 @@ class Equivar_iResBlock(nn.Module):
         n_samples=1,
         n_exact_terms=2,
         n_dist='geometric',
-        neumann_grad=True,
+        neumann_grad=False,
         grad_in_forward=False,
     ):
         """
@@ -298,6 +301,7 @@ class Equivar_iResBlock(nn.Module):
             if self.training:
                 if self.n_power_series is None:
                     # Unbiased estimation.
+                    # ipdb.set_trace()
                     lamb = self.lamb.item()
                     n_samples = sample_fn(self.n_samples)
                     n_power_series = max(n_samples) + self.n_exact_terms
@@ -320,6 +324,7 @@ class Equivar_iResBlock(nn.Module):
                 # Power series with trace estimator.
                 ####################################
                 # Choose the type of estimator.
+                # ipdb.set_trace()
                 if self.training and self.neumann_grad:
                     estimator_fn = neumann_logdet_estimator
                 else:
@@ -354,7 +359,7 @@ class Equivar_iResBlock(nn.Module):
                 ############################################
                 x = x.requires_grad_(True)
                 g = self.nnet(x)
-                jac = batch_jacobian(g, x)
+                jac = batch_jacobian(g.tensor, x)
                 logdetgrad = batch_trace(jac)
                 jac_k = jac
                 for k in range(2, n_power_series + 1):
@@ -385,6 +390,7 @@ def geom_batch_jacobian(g, x):
 def batch_jacobian(g, x):
     jac = []
     for d in range(g.shape[1]):
+        # jac.append(torch.autograd.grad(torch.sum(g[:, :, :, d]), x, create_graph=True)[0].view(x.shape[0], 1, x.shape[-1]))
         jac.append(torch.autograd.grad(torch.sum(g[:, d]), x, create_graph=True)[0].view(x.shape[0], 1, x.shape[1]))
     return torch.cat(jac, 1)
 
@@ -402,22 +408,23 @@ class MemoryEfficientLogDetEstimator(torch.autograd.Function):
     def forward(ctx, estimator_fn, gnet, x, n_power_series, vareps, coeff_fn, training, *g_params):
         ctx.training = training
         with torch.enable_grad():
-            x = x.detach().requires_grad_(True)
-            g = gnet(x)
-            is_this_a_tensor = torch.is_tensor(g)
-            if not is_this_a_tensor:
-                g = g.tensor
-            ctx.g = g
-            ctx.x = x
-            logdetgrad = estimator_fn(g, x, n_power_series, vareps, coeff_fn, training)
+            with torch.autograd.detect_anomaly():
+                x = x.detach().requires_grad_(True)
+                g = gnet(x)
+                is_this_a_tensor = torch.is_tensor(g)
+                if not is_this_a_tensor:
+                    g = g.tensor
+                ctx.g = g
+                ctx.x = x
+                logdetgrad = estimator_fn(g, x, n_power_series, vareps, coeff_fn, training)
 
-            if training:
-                grad_x, *grad_params = torch.autograd.grad(
-                    logdetgrad.sum(), (x,) + g_params, retain_graph=True, allow_unused=True
-                )
-                if grad_x is None:
-                    grad_x = torch.zeros_like(x)
-                ctx.save_for_backward(grad_x, *g_params, *grad_params)
+                if training:
+                    grad_x, *grad_params = torch.autograd.grad(
+                        logdetgrad.sum(), (x,) + g_params, retain_graph=True, allow_unused=True
+                    )
+                    if grad_x is None:
+                        grad_x = torch.zeros_like(x)
+                    ctx.save_for_backward(grad_x, *g_params, *grad_params)
 
         return safe_detach(g), safe_detach(logdetgrad)
 

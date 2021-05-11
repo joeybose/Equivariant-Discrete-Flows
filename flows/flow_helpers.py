@@ -192,51 +192,23 @@ def create_equivariant_real_nvp_blocks(input_size, in_type, field_type,
         return t
 
 
-def create_equivariant_convexp_blocks(input_size, hidden_size, n_blocks,
-                                       n_hidden, group_action_type,
-                                       kernel_size=3, padding=1):
+def create_equivariant_convexp_blocks(input_size, in_type, field_type,
+                                      out_fiber, activation_fn, hidden_size,
+                                      n_blocks, n_hidden, group_action_type,
+                                      kernel_size=3, padding=1):
     nets = []
-    # the model is equivariant under rotations by 45 degrees, modelled by C8
-
-    # the input image is a scalar field, corresponding to the trivial representation
-    in_type = enn.FieldType(group_action_type, [group_action_type.trivial_repr])
-
-    # we store the input type for wrapping the images into a geometric tensor during the forward pass
+    _, c, h , w = input_size
     input_type = in_type
-
-    out_type = enn.FieldType(group_action_type, [group_action_type.trivial_repr])
-    # out_type = enn.FieldType(group_action_type, hidden_size*[group_action_type.regular_repr])
+    _, c, h , w = input_size
+    out_type = enn.FieldType(group_action_type, c*[group_action_type.trivial_repr])
     for i in range(n_blocks):
-        # s_block = [enn.SequentialModule(
-            # layers.R2EquivariantConv(in_type=in_type, out_type=out_type, kernel_size=kernel_size,
-                       # padding=padding, bias=True),
-            # # enn.InnerBatchNorm(out_type),
-            # # enn.ELU(out_type, inplace=True)
-        # )]
         s_block = [
-            layers.R2EquivariantConv(in_type=in_type, out_type=out_type, kernel_size=kernel_size,
+            enn.R2Conv(in_type, out_type, kernel_size=kernel_size,
                        padding=padding, bias=True),
             # enn.InnerBatchNorm(out_type),
-            enn.ELU(out_type, inplace=True)
+            # activation_fn(out_type, inplace=True)
         ]
-        # inter_block_out_type = enn.FieldType(group_action_type, hidden_size*[group_action_type.regular_repr])
-        # inter_block_out_type = enn.FieldType(group_action_type, [group_action_type.trivial_repr])
-        # for _ in range(n_hidden):
-            # s_block += [enn.SequentialModule(
-                # layers.R2EquivariantConv(s_block[-1].out_type, out_type=inter_block_out_type,
-                           # kernel_size=kernel_size, padding=padding, bias=True),
-                # # enn.InnerBatchNorm(inter_block_out_type),
-                # enn.ELU(inter_block_out_type, inplace=True)
-            # )]
-
-        # s_block += [enn.SequentialModule(
-            # layers.R2EquivariantConv(s_block[-1].out_type, out_type=in_type, kernel_size=kernel_size,
-                       # padding=padding, bias=True),
-            # # enn.InnerBatchNorm(out_type),
-            # enn.ELU(in_type, inplace=True)
-        # )]
-        nets += [MultiInputSequential(*s_block)]
-
+        nets +=[MultiInputSequential(*s_block)]
     s = nets = MultiInputSequential(*nets)
     return s
 

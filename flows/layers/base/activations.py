@@ -152,15 +152,6 @@ class GeomSwish(EquivariantModule):
             self._inplace, self.in_type
         )
 
-    def export(self):
-        r"""
-        Export this module to a normal PyTorch :class:`torch.nn.ReLU` module and set to "eval" mode.
-
-        """
-
-        self.eval()
-
-        return torch.nn.ReLU(inplace=self._inplace)
 
 if __name__ == '__main__':
 

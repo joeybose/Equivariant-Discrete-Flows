@@ -6,11 +6,16 @@ import torch.nn.functional as F
 
 from .utils import _pair
 from .mixed_lipschitz import InducedNormLinear, InducedNormConv2d, InducedNormEquivarConv2d
+from .r2_conv import MyR2Conv
+from .spectral_norm import SpectralNorm
+from .spectral import spectral_norm_conv
 from e2cnn import gspaces
 from e2cnn import nn as enn
 import ipdb
 
-__all__ = ['SpectralNormLinear', 'SpectralNormConv2d', 'LopLinear', 'LopConv2d', 'get_linear', 'get_conv2d', 'get_equivar_conv2d']
+__all__ = ['SpectralNormLinear', 'SpectralNormConv2d', 'LopLinear',
+           'LopConv2d', 'get_linear', 'get_conv2d', 'get_equivar_conv2d',
+           'MyR2Conv']
 
 
 class SpectralNormLinear(nn.Module):
@@ -537,12 +542,19 @@ def get_equivar_conv2d(
     in_type, out_type, group_action_type, kernel_size, stride, padding, bias=True, coeff=0.97, domain=None, codomain=None, **kwargs
 ):
     _conv2d = InducedNormEquivarConv2d
-    if domain == 1:
-        if codomain in [1, 2, float('inf')]:
-            _conv2d = LopConv2d
-    elif codomain == float('inf'):
-        if domain in [2, float('inf')]:
-            _conv2d = LopConv2d
-    equivar_conv = _conv2d(in_type, out_type, group_action_type, kernel_size, stride, padding, bias, coeff, domain, codomain, **kwargs)
+    equivar_conv = MyR2Conv(in_type, out_type, kernel_size=kernel_size,
+                            stride=stride, padding=padding, bias=bias,
+                            initialize=True)
+    # equivar_conv = spectral_norm_conv(equivar_conv, input_dim=input_size,
+                       # name='filter', n_power_iterations=1, eps=1e-12)
+    # equivar_conv = SpectralNorm(equivar_conv, out_type=out_type, name='filter')
+    # equivar_conv = SpectralNorm(equivar_conv, out_type=out_type, name='filter')
+    # if domain == 1:
+        # if codomain in [1, 2, float('inf')]:
+            # _conv2d = LopConv2d
+    # elif codomain == float('inf'):
+        # if domain in [2, float('inf')]:
+            # _conv2d = LopConv2d
+    # equivar_conv = _conv2d(in_type, out_type, group_action_type, kernel_size, stride, padding, bias, coeff, domain, codomain, **kwargs)
     # return nn.utils.spectral_norm(equivar_conv, n_power_iterations=1000)
     return equivar_conv

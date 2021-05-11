@@ -655,8 +655,8 @@ class InducedNormEquivarConv2d(nn.Module):
 
     def forward(self, input):
         if not self.initialized: self.spatial_dims.copy_(torch.tensor(input.shape[2:4]).to(self.spatial_dims))
-        # weight, expanded_bias = self.compute_weight(update=False)
-        weight, expanded_bias = self.compute_weight(update=True)
+        weight, expanded_bias = self.compute_weight(update=False)
+        # weight, expanded_bias = self.compute_weight(update=True)
         is_this_a_tensor = torch.is_tensor(input)
         if is_this_a_tensor:
             output = F.conv2d(input, weight, expanded_bias, self.stride, self.padding, 1, 1)

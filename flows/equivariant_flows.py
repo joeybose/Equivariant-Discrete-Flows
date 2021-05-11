@@ -152,7 +152,6 @@ class EquivariantRealNVP(nn.Module):
             fiber_batch_mask = self.mask[i].view(self.c, 1, 1).repeat(z.shape[0], 1 , 1, 1)
             z_ = fiber_batch_mask * z
             z_ = enn.GeometricTensor(z_, self.input_type)
-            # ipdb.set_trace()
             # self.check_invariance(self.group_action_type, self.input_type,
                                   # z_, self.s[i])
             # self.check_equivariance(self.group_action_type, self.input_type,
@@ -389,61 +388,114 @@ class EquivariantConvExp(nn.Module):
     def __init__(self, args, n_blocks, input_size, hidden_size, n_hidden,
                  group_action_type=None):
         super(EquivariantConvExp, self).__init__()
-        mask = torch.arange(input_size).float() % 2
+        _, self.c, self.h, self.w = input_size[:]
         self.n_blocks = n_blocks
         self.n_hidden = n_hidden
         self.group_action_type = GROUPS[args.group]
         self.group_card = len(list(self.group_action_type.testing_elements))
+        self.out_fiber = args.out_fiber
+        self.field_type = args.field_type
+        self.n_terms = 10
         self.dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.p_z = StandardNormal
         self.input_type = enn.FieldType(self.group_action_type, [self.group_action_type.trivial_repr])
-        self.flow_model = create_equivariant_convexp_blocks(input_size, hidden_size,
-                                                   n_blocks, n_hidden,
-                                                   self.group_action_type)
-        # base distribution for calculation of log prob under the model
-        self.register_buffer('base_dist_mean', torch.zeros(input_size))
-        self.register_buffer('base_dist_var', torch.ones(input_size))
-        self.mask = nn.Parameter(mask, requires_grad=False)
+        self.activation_fn = ACT_FNS[args.act]
+        self.activation_fn_applied= self.activation_fn(self.input_type, inplace=True)
+        self.flow_model = create_equivariant_convexp_blocks(input_size,
+                                                            self.input_type,
+                                                            self.field_type,
+                                                            self.out_fiber,
+                                                            self.activation_fn,
+                                                            hidden_size,
+                                                            self.n_blocks,
+                                                            n_hidden,
+                                                            self.group_action_type,
+                                                            args.kernel_size,
+                                                            args.realnvp_padding,)
 
     def standard_normal_sample(self, size):
         return torch.randn(size)
+
+    def invertible_tanh(self, inp, inverse=False):
+        if inverse:
+            inv = 0.5 * torch.log((1 + inp) / (1 - inp))
+            return inv
+        return torch.tanh(inp)
 
     def standard_normal_logprob(self, z):
         logZ = -0.5 * math.log(2 * math.pi)
         return logZ - z.pow(2) / 2
 
     def inverse(self, z):
-        log_det_J, x = z.new_zeros(z.shape[0]), z.view(-1, 1, 1, 2)
+        log_det_J, x = z.new_zeros(z.shape[0]), z.view(-1, self.c, self.h, self.w)
         B, C, H, W = x.size()
         x = enn.GeometricTensor(x, self.input_type)
         for i in range(0,self.n_blocks):
-            x = self.flow_model[i](x, True)
-            filter = self.flow_model[i][0].expand_parameters()[0]
-            # filter = list(list(self.flow_model[i].modules())[1].modules())[1].expand_parameters()[0]
+            filter = list(self.flow_model[i][0].named_modules())[0][1].expand_parameters()[0]
+            x = self.invertible_tanh(x.tensor, inverse=True)
+            x = inv_conv_exp(x, filter, terms=self.n_terms)
+            x = enn.GeometricTensor(x, self.input_type)
+            # x = self.activation_fn_applied(x)
             log_det_J += log_det(filter) * H * W
         return x.tensor.squeeze(), log_det_J
 
-    def forward(self, x):
-        log_det_J, z = x.new_zeros(x.shape[0]), x.view(-1, 1, 1, 2)
+    def forward(self, x, inverse=False):
+        if inverse:
+            return self.inverse(x)
+        log_det_J, z = x.new_zeros(x.shape[0]), x.view(-1, self.c, self.h, self.w)
         B, C, H, W = z.size()
         z = enn.GeometricTensor(z, self.input_type)
         for i in reversed(range(0,self.n_blocks)):
-            z = self.flow_model[i](z)
-            # utils.check_equivariance(self.group_action_type, self.input_type,
-                                     # x, self.flow_model[i], 'GeomTensor')
-            filter = self.flow_model[i][0].expand_parameters()[0]
-            # filter = list(list(self.flow_model[i].modules())[1].modules())[1].expand_parameters()[0]
+            filter = list(self.flow_model[i][0].named_modules())[0][1].expand_parameters()[0]
+            # ipdb.set_trace()
+            z = conv_exp(z.tensor, filter, terms=self.n_terms)
+            z = self.invertible_tanh(z)
+            z = enn.GeometricTensor(z, self.input_type)
+            # z = self.activation_fn_applied(z)
             log_det_J -= log_det(filter) * H * W
-        return z.tensor.squeeze(), log_det_J
+        return z.tensor.squeeze(), log_det_J.view(-1,1)
 
-    def log_prob(self, inputs, edge_index=None):
+    def log_prob(self, inputs, beta=1.):
+        # ipdb.set_trace()
         z, delta_logp = self.forward(inputs)
+        # x, delta_logp_ = self.forward(z, inverse=True)
+        # print(torch.allclose(x, inputs, atol=1e-3))
         # compute log p(z)
-        logpz = self.standard_normal_logprob(z).sum(1, keepdim=True)
-
-        logpx = logpz - self.beta * delta_logp
+        logpz = standard_normal_logprob(z).view(z.size(0), -1).sum(1, keepdim=True)
+        logpx = logpz - beta * delta_logp
+        # loss = -torch.mean(logpx)
+        # return loss, torch.mean(logpz), torch.mean(-delta_logp), None
+        # print("NLL %f " % (-loss.item()))
         loss = -torch.mean(logpx)
-        return loss, torch.mean(logpz), torch.mean(-delta_logp)
+        return loss, logpz, -1*delta_logp
+
+    def compute_loss(self, args, inputs, beta=1.):
+        bits_per_dim, logits_tensor = torch.zeros(1).to(inputs), torch.zeros(args.n_classes).to(inputs)
+        logpz, delta_logp = torch.zeros(1).to(inputs), torch.zeros(1).to(inputs)
+        # z, _ = self.forward(inputs)
+        # x = self.inverse(z)
+        if args.dataset == 'celeba_5bit':
+            nvals = 32
+        elif args.dataset == 'celebahq':
+            nvals = 2**args.nbits
+        else:
+            nvals = 256
+
+        # z, _ = self.forward(inputs)
+        # x, _ = self.inverse(z)
+        padded_inputs, logpu = add_padding(args, inputs, nvals)
+        _, logpz, delta_logp = self.log_prob(padded_inputs, beta)
+
+        # log p(x)
+        logpx = logpz - beta * delta_logp - np.log(nvals) * (
+            args.imagesize * args.imagesize * (args.im_dim + args.padding)
+        ) - logpu
+        bits_per_dim = -torch.mean(logpx) / (args.imagesize *
+                                             args.imagesize * args.im_dim) / np.log(2)
+
+        logpz = torch.mean(logpz).detach()
+        delta_logp = torch.mean(-delta_logp).detach()
+        return bits_per_dim, logits_tensor, logpz, delta_logp, _
 
     def sample(self, batchSize):
         # TODO: Update this method for edge_index
@@ -476,7 +528,7 @@ class EquivariantToyResFlow(nn.Module):
                     n_power_series=self.args.n_power_series,
                     exact_trace=self.args.exact_trace,
                     brute_force=self.args.brute_force,
-                    n_samples=self.args.nsamples,
+                    n_samples=self.args.batch_size,
                     neumann_grad=True,
                     grad_in_forward=True,
                 )

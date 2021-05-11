@@ -36,7 +36,7 @@ class ToyResFlow(nn.Module):
                     n_power_series=self.args.n_power_series,
                     exact_trace=self.args.exact_trace,
                     brute_force=self.args.brute_force,
-                    n_samples=self.args.nsamples,
+                    n_samples=self.args.batch_size,
                     neumann_grad=True,
                     grad_in_forward=True,
                 )

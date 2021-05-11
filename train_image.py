@@ -35,20 +35,22 @@ warnings.filterwarnings("ignore")
 
 criterion = torch.nn.CrossEntropyLoss()
 
-def check_invertibility(flow_model, x, z):
-    with torch.no_grad():
-        inv = flow_model.forward(z, inverse=True)
-        assert torch.allclose(x, inv, atol=1e-4)
-        print("Passed Invertibility Test")
+# def check_invertibility(flow_model, x, z):
+    # with torch.no_grad():
+        # inv = flow_model.forward(z, inverse=True)
+        # assert torch.allclose(x, inv, atol=1e-4)
+        # print("Passed Invertibility Test")
 
 
 def do_train_epoch(args, epoch, flow_model, optim, train_loader, meters):
     flow_model.train()
+    # ipdb.set_trace()
     total = 0
     correct = 0
     end = time.time()
     batch_time, bpd_meter, logpz_meter, deltalogp_meter, firmom_meter, secmom_meter, gnorm_meter, ce_meter, ema = meters[:]
     for i, (x, y) in enumerate(train_loader):
+        do_update = True
         global_itr = epoch * len(train_loader) + i
         if args.update_lr:
             utils.update_lr(args, optim, global_itr)
@@ -61,13 +63,15 @@ def do_train_epoch(args, epoch, flow_model, optim, train_loader, meters):
         x = x.to(args.dev)
 
         if 'resflow' in args.model_type:
-            flow_model.update_lipschitz()
+            flow_model.update_lipschitz(args.n_lipschitz_iters)
 
         beta = beta = min(1, global_itr / args.annealing_iters) if args.annealing_iters > 0 else 1.
         bpd, logits, logpz, neg_delta_logp, z = flow_model.compute_loss(args, x, beta=beta)
-        # check_invertibility(flow_model, x, z)
 
         if bpd < 0:
+            do_update = False
+            print("BPD < 0 | %d" %(bpd))
+            flow_model.update_lipschitz(100)
             z_out = z.detach()
             del bpd
             del logits
@@ -75,57 +79,61 @@ def do_train_epoch(args, epoch, flow_model, optim, train_loader, meters):
             del neg_delta_logp
             del z
             torch.cuda.empty_cache()
-            with torch.no_grad():
-                ipdb.set_trace()
-                inv = flow_model.forward(z_out, inverse=True)
+            # with torch.no_grad():
+                # ipdb.set_trace()
+                # inv = flow_model.forward(z_out, inverse=True)
 
-        if args.task in ['density', 'hybrid']:
-            firmom, secmom = utils.estimator_moments(flow_model)
+        if do_update:
+            if args.task in ['density', 'hybrid']:
+                firmom, secmom = utils.estimator_moments(flow_model)
 
-            bpd_meter.update(bpd.item())
-            logpz_meter.update(logpz.item())
-            deltalogp_meter.update(neg_delta_logp.item())
-            firmom_meter.update(firmom)
-            secmom_meter.update(secmom)
+                bpd_meter.update(bpd.item())
+                logpz_meter.update(logpz.item())
+                deltalogp_meter.update(neg_delta_logp.item())
+                firmom_meter.update(firmom)
+                secmom_meter.update(secmom)
 
-        if args.task in ['classification', 'hybrid']:
-            y = y.to(args.dev)
-            crossent = criterion(logits, y)
-            ce_meter.update(crossent.item())
+            if args.task in ['classification', 'hybrid']:
+                y = y.to(args.dev)
+                crossent = criterion(logits, y)
+                ce_meter.update(crossent.item())
 
-            # Compute accuracy.
-            _, predicted = logits.max(1)
-            total += y.size(0)
-            correct += predicted.eq(y).sum().item()
+                # Compute accuracy.
+                _, predicted = logits.max(1)
+                total += y.size(0)
+                correct += predicted.eq(y).sum().item()
 
-        # compute gradient and do SGD step
-        if args.task == 'density':
-            loss = bpd
-        elif args.task == 'classification':
-            loss = crossent
-        else:
-            if not args.scale_dim: bpd = bpd * (args.imagesize * args.imagesize * im_dim)
-            loss = bpd + crossent / np.log(2)  # Change cross entropy from nats to bits.
-        loss.backward()
+            # compute gradient and do SGD step
+            if args.task == 'density':
+                loss = bpd
+            elif args.task == 'classification':
+                loss = crossent
+            else:
+                if not args.scale_dim: bpd = bpd * (args.imagesize * args.imagesize * im_dim)
+                loss = bpd + crossent / np.log(2)  # Change cross entropy from nats to bits.
 
-        # if global_itr % args.update_freq == args.update_freq - 1:
+        if do_update:
+            loss.backward()
 
-            # if args.update_freq > 1:
-                # with torch.no_grad():
-                    # for p in flow_model.parameters():
-                        # if p.grad is not None:
-                            # p.grad /= args.update_freq
+            # if global_itr % args.update_freq == args.update_freq - 1:
 
-        grad_norm = torch.nn.utils.clip_grad.clip_grad_norm_(flow_model.parameters(), 1.)
-        if args.learn_p: flow_model.compute_p_grads(model)
+                # if args.update_freq > 1:
+                    # with torch.no_grad():
+                        # for p in flow_model.parameters():
+                            # if p.grad is not None:
+                                # p.grad /= args.update_freq
 
-        optim.step()
+            grad_norm = torch.nn.utils.clip_grad.clip_grad_norm_(flow_model.parameters(), 1.)
+            if args.learn_p: flow_model.compute_p_grads(model)
+
+            optim.step()
+            gnorm_meter.update(grad_norm)
+
         optim.zero_grad()
         if 'resflow' in args.model_type:
-            flow_model.update_lipschitz()
+            flow_model.update_lipschitz(args.n_lipschitz_iters)
         # ema.apply()
 
-        gnorm_meter.update(grad_norm)
 
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -167,6 +175,13 @@ def do_train_epoch(args, epoch, flow_model, optim, train_loader, meters):
         gc.collect()
     pass
 
+def check_invertibility(args, epoch, flow_model, test_loader):
+    with torch.no_grad():
+        for i, (x, y) in enumerate(tqdm(test_loader)):
+            x = x.to(args.dev)
+            flow_model.check_invertibility(args, x)
+            break
+
 def validate(args, epoch, flow_model, test_loader, ema=None):
     """
     Evaluates the cross entropy between p_data and p_model.
@@ -178,7 +193,7 @@ def validate(args, epoch, flow_model, test_loader, ema=None):
         # ema.swap()
 
     if 'resflow' in args.model_type:
-        flow_model.update_lipschitz()
+        flow_model.update_lipschitz(100)
 
     # flow_model = utils.parallelize(flow_model)
     flow_model.eval()
@@ -234,6 +249,7 @@ def train_flow(args, flow, optim, scheduler, train_loader, test_loader):
         print('Current LR {}'.format(optim.param_groups[0]['lr']))
         # if epoch > 1:
             # ipdb.set_trace()
+        check_invertibility(args, epoch, flow, test_loader)
         do_train_epoch(args, epoch, flow, optim, train_loader, meters)
         if 'resflow' in args.model_type:
             lipschitz_constants.append(flow.get_lipschitz_constants())
@@ -262,7 +278,7 @@ def main(args):
 
     if args.squeeze_first:
         args.input_size = (input_size[0], input_size[1] * 4, input_size[2] // 2, input_size[3] // 2)
-    if args.model_type == 'E_resflow':
+    if args.model_type == 'E_resflow' or args.model_type == 'Mixed_resflow':
         args.init_layer = layers.EquivariantLogitTransform(args.logit_init)
         args.squeeze_layer = layers.EquivariantSqueezeLayer(2)
     else:
@@ -273,8 +289,9 @@ def main(args):
     print("Number of trainable parameters: {}".format(utils.count_parameters(flow)))
 
     scheduler = None
+    flow_params = filter(lambda p: p.requires_grad, flow.parameters())
     if args.optimizer == 'adam':
-        optimizer = optim.Adam(flow.parameters(), lr=args.lr, betas=(0.9, 0.99), weight_decay=args.wd)
+        optimizer = optim.Adam(flow_params, lr=args.lr, betas=(0.9, 0.99), weight_decay=args.wd)
         if args.scheduler: scheduler = utils.CosineAnnealingWarmRestarts(optimizer, 20, T_mult=2, last_epoch=args.begin_epoch - 1)
     elif args.optimizer == 'adamax':
         optimizer = optim.Adamax(flow.parameters(), lr=args.lr, betas=(0.9, 0.99), weight_decay=args.wd)
@@ -307,7 +324,7 @@ if __name__ == '__main__':
     parser.add_argument('--coeff', type=float, default=0.98)
     parser.add_argument('--logit_init', type=float, default=1e-6, help='Logit layer init')
     parser.add_argument('--vnorms', type=str, default='2222')
-    parser.add_argument('--n-lipschitz-iters', type=int, default=None)
+    parser.add_argument('--n-lipschitz-iters', type=int, default=5)
     parser.add_argument('--sn-tol', type=float, default=1e-3)
     parser.add_argument('--learn-p', type=eval, choices=[True, False], default=False)
 
@@ -340,14 +357,14 @@ if __name__ == '__main__':
     parser.add_argument('--exact-trace', type=eval, choices=[True, False], default=False)
     parser.add_argument('--factor-out', type=eval, choices=[True, False], default=False)
     parser.add_argument('--n-power-series', type=int, default=None)
-    parser.add_argument('--n-exact-terms', type=int, default=2)
+    parser.add_argument('--n-exact-terms', type=int, default=10)
     parser.add_argument('--var-reduc-lr', type=float, default=0)
     parser.add_argument('--neumann-grad', type=eval, choices=[True, False], default=True)
     parser.add_argument('--mem-eff', type=eval, choices=[True, False], default=True)
     parser.add_argument('--n-dist', choices=['geometric', 'poisson'], default='geometric')
     parser.add_argument('--out-fiber', type=str, default='regular')
     parser.add_argument('--field-type', type=int, default=0, help='Only For Continuous groups. Picks the frequency.')
-    parser.add_argument('--n-samples', type=int, default=1)
+    parser.add_argument('--n-samples', type=int, default=10)
     parser.add_argument('--group', type=str, default='fliprot4', help='The choice of group representation for Equivariance')
     # training parameters
     parser.add_argument('--optimizer', type=str, choices=['adam', 'adamax', 'rmsprop', 'sgd'], default='adam')
@@ -366,7 +383,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--task', type=str, choices=['density', 'classification', 'hybrid'], default='density')
     parser.add_argument('--scale-dim', type=eval, choices=[True, False], default=False)
-    parser.add_argument('--update-lr', type=eval, choices=[True, False], default=True)
+    parser.add_argument('--update-lr', type=eval, choices=[True, False], default=False)
     parser.add_argument('--rcrop-pad-mode', type=str, choices=['constant', 'reflect'], default='reflect')
     parser.add_argument('--padding-dist', type=str, choices=['uniform', 'gaussian'], default='uniform')
     parser.add_argument('--double-padding', type=eval, choices=[True, False], default=False)

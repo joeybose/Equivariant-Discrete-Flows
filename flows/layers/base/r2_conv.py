@@ -272,11 +272,12 @@ class MyR2Conv(EquivariantModule):
         self.weights = Parameter(torch.zeros(self.basisexpansion.dimension()), requires_grad=True)
         filter = torch.zeros(out_type.size, in_type.size, kernel_size,
                                   kernel_size)
-        filter = Parameter(torch.zeros(out_type.size, in_type.size,
-                                         kernel_size, kernel_size), requires_grad=True)
+        # filter = Parameter(torch.zeros(out_type.size, in_type.size,
+                                         # kernel_size, kernel_size), requires_grad=True)
         self.register_buffer("filter", filter)
         self.register_buffer('scale', torch.tensor(0.))
         self.max_iters = 10
+        self.coeff = 0.97
         # self.register_parameter("filter", self.filter)
 
         self._make_params()
@@ -295,7 +296,7 @@ class MyR2Conv(EquivariantModule):
             v = l2normalize(torch.mv(torch.t(new_w), u))
             u = l2normalize(torch.mv(new_w, v))
 
-        sigma = u.dot(new_w.mv(v))
+        sigma = u.dot(new_w.mv(v)) / self.coeff
         self.scale.copy_(sigma)
         return w / sigma.expand_as(w)
 

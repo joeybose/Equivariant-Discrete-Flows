@@ -541,10 +541,11 @@ def get_conv2d(
 def get_equivar_conv2d(
     in_type, out_type, group_action_type, kernel_size, stride, padding, bias=True, coeff=0.97, domain=None, codomain=None, **kwargs
 ):
-    _conv2d = InducedNormEquivarConv2d
+    # _conv2d = InducedNormEquivarConv2d
     equivar_conv = MyR2Conv(in_type, out_type, kernel_size=kernel_size,
                             stride=stride, padding=padding, bias=bias,
-                            initialize=True)
+                            sigma=0.6, frequencies_cutoff=0.8,
+                            maximum_offset=0, initialize=True)
     # equivar_conv = spectral_norm_conv(equivar_conv, input_dim=input_size,
                        # name='filter', n_power_iterations=1, eps=1e-12)
     # equivar_conv = SpectralNorm(equivar_conv, out_type=out_type, name='filter')

@@ -35,20 +35,13 @@ warnings.filterwarnings("ignore")
 
 criterion = torch.nn.CrossEntropyLoss()
 
-# def check_invertibility(flow_model, x, z):
-    # with torch.no_grad():
-        # inv = flow_model.forward(z, inverse=True)
-        # assert torch.allclose(x, inv, atol=1e-4)
-        # print("Passed Invertibility Test")
-
-
 def do_train_epoch(args, epoch, flow_model, optim, train_loader, meters):
     flow_model.train()
     # ipdb.set_trace()
     total = 0
     correct = 0
     end = time.time()
-    batch_time, bpd_meter, logpz_meter, deltalogp_meter, firmom_meter, secmom_meter, gnorm_meter, ce_meter, ema = meters[:]
+    batch_time, bpd_meter, logpz_meter, deltalogp_meter, firmom_meter, secmom_meter, gnorm_meter, ce_meter, ema, weightnorm_meter = meters[:]
     for i, (x, y) in enumerate(train_loader):
         do_update = True
         global_itr = epoch * len(train_loader) + i
@@ -124,10 +117,12 @@ def do_train_epoch(args, epoch, flow_model, optim, train_loader, meters):
                                 # p.grad /= args.update_freq
 
             grad_norm = torch.nn.utils.clip_grad.clip_grad_norm_(flow_model.parameters(), 1.)
+            weight_norm = utils.monitor_weight_norm(flow_model)
             if args.learn_p: flow_model.compute_p_grads(model)
 
             optim.step()
             gnorm_meter.update(grad_norm)
+            weightnorm_meter.update(weight_norm)
 
         optim.zero_grad()
         if 'resflow' in args.model_type:
@@ -142,8 +137,10 @@ def do_train_epoch(args, epoch, flow_model, optim, train_loader, meters):
         if i % args.print_freq == 0:
             s = (
                 'Epoch: [{0}][{1}/{2}] | Time {batch_time.val:.3f} | '
-                'GradNorm {gnorm_meter.avg:.2f}'.format(
-                    epoch, i, len(train_loader), batch_time=batch_time, gnorm_meter=gnorm_meter
+                'GradNorm {gnorm_meter.avg:.2f} | '
+                'Weight Norm {weightnorm_meter.avg:.2f}'.format(
+                    epoch, i, len(train_loader), batch_time=batch_time,
+                    gnorm_meter=gnorm_meter, weightnorm_meter=weightnorm_meter,
                 )
             )
 
@@ -161,7 +158,8 @@ def do_train_epoch(args, epoch, flow_model, optim, train_loader, meters):
                 if args.wandb:
                     wandb.log({'BPD': bpd_meter.val, "Logpz": logpz_meter.avg,
                                '-DeltaLogp': deltalogp_meter.avg, 'GradNorm':
-                               gnorm_meter.avg, 'epoch': epoch})
+                               gnorm_meter.avg, 'WeightNorm':
+                               weightnorm_meter.avg, 'epoch': epoch})
 
             if args.task in ['classification', 'hybrid']:
                 s += ' | CE {ce_meter.avg:.4f} | Acc {0:.4f}'.format(100 * correct / total, ce_meter=ce_meter)
@@ -192,8 +190,13 @@ def validate(args, epoch, flow_model, test_loader, ema=None):
     # if ema is not None:
         # ema.swap()
 
+    lipschitz_constants = []
     if 'resflow' in args.model_type:
         flow_model.update_lipschitz(100)
+        lipschitz_constants.append(flow_model.get_lipschitz_constants())
+        print('Valid Lipsch: {}'.format(utils.pretty_repr(lipschitz_constants[-1])))
+
+    check_invertibility(args, epoch, flow_model, test_loader)
 
     # flow_model = utils.parallelize(flow_model)
     flow_model.eval()
@@ -238,18 +241,19 @@ def train_flow(args, flow, optim, scheduler, train_loader, test_loader):
     secmom_meter = utils.RunningAverageMeter(0.97)
     gnorm_meter = utils.RunningAverageMeter(0.97)
     ce_meter = utils.RunningAverageMeter(0.97)
+    weightnorm_meter = utils.RunningAverageMeter(0.97)
     ema = utils.ExponentialMovingAverage(flow)
 
     meters = [batch_time, bpd_meter, logpz_meter, deltalogp_meter,
-              firmom_meter, secmom_meter, gnorm_meter, ce_meter, ema]
+              firmom_meter, secmom_meter, gnorm_meter, ce_meter, ema,
+              weightnorm_meter]
     lipschitz_constants = []
-
+    check_invertibility(args,0 , flow, test_loader)
     for epoch in range(args.num_iters):
 
         print('Current LR {}'.format(optim.param_groups[0]['lr']))
         # if epoch > 1:
             # ipdb.set_trace()
-        check_invertibility(args, epoch, flow, test_loader)
         do_train_epoch(args, epoch, flow, optim, train_loader, meters)
         if 'resflow' in args.model_type:
             lipschitz_constants.append(flow.get_lipschitz_constants())

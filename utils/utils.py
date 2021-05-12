@@ -678,3 +678,12 @@ def estimator_moments(model, baseline=0):
 def parallelize(model):
     return torch.nn.DataParallel(model)
 
+'''Monitor Norm of weights'''
+def monitor_weight_norm(model):
+    parameters = list(filter(lambda p: p is not None, model.parameters()))
+    total_norm = 0
+    for p in parameters:
+        param_norm = p.data.norm(2)
+        total_norm += param_norm ** 2
+    total_norm = total_norm ** (1. / 2)
+    return total_norm

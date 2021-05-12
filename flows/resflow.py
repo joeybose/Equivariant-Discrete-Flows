@@ -503,7 +503,6 @@ class StackediResBlocks(layers.SequentialFlow):
         if init_layer is not None: chain.append(init_layer)
         if first_resblock and actnorm: chain.append(_actnorm(initial_size, fc))
         if first_resblock and fc_actnorm: chain.append(_actnorm(initial_size, True))
-        ipdb.set_trace()
         if squeeze:
             c, h, w = initial_size
             for i in range(n_blocks):

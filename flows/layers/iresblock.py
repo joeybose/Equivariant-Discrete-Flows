@@ -260,7 +260,7 @@ class Equivar_iResBlock(nn.Module):
             x, x_prev = y.tensor - self.nnet(x).tensor, x.tensor
             i += 1
             if i > 1000:
-                logger.info('Iterations exceeded 1000 for inverse.')
+                print('Iterations exceeded 1000 for inverse.')
                 break
         try:
             x = enn.GeometricTensor(x.view(-1, c, h, w), self.nnet.nnet[-1].out_type)

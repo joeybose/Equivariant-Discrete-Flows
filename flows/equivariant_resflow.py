@@ -245,17 +245,37 @@ class EquivariantResidualFlow(nn.Module):
             hidden_shapes.append((n, c, h, w))
 
         classification_heads = []
+        feat_type_out = FIBERS['regular'](self.group_action_type,
+                                          self.classification_hdim,
+                                          self.field_type, fixparams=True)
+        feat_type_mid = FIBERS['regular'](self.group_action_type,
+                                          int(self.classification_hdim // 2),
+                                          self.field_type, fixparams=True)
+        feat_type_last = FIBERS['regular'](self.group_action_type,
+                                          int(self.classification_hdim // 4),
+                                          self.field_type, fixparams=True)
+        # feat_type_out = enn.FieldType(self.group_action_type,
+                                      # self.classification_hdim*[self.group_action_type.regular_repr])
         for i, hshape in enumerate(hidden_shapes):
             classification_heads.append(
                 nn.Sequential(
-                    nn.Conv2d(hshape[1], self.classification_hdim, 3, 1, 1),
-                    layers.ActNorm2d(self.classification_hdim),
-                    nn.ReLU(inplace=True),
-                    nn.AdaptiveAvgPool2d((1, 1)),
+                    enn.R2Conv(self.input_type, feat_type_out, 5, stride=2),
+                    layers.EquivariantActNorm2d(feat_type_out.size),
+                    enn.ReLU(feat_type_out, inplace=True),
+                    enn.PointwiseAvgPoolAntialiased(feat_type_out, sigma=0.66, stride=2),
+                    enn.R2Conv(feat_type_out, feat_type_mid, kernel_size=3),
+                    layers.EquivariantActNorm2d(feat_type_mid.size),
+                    enn.ReLU(feat_type_mid, inplace=True),
+                    enn.PointwiseAvgPoolAntialiased(feat_type_mid, sigma=0.66, stride=1),
+                    enn.R2Conv(feat_type_mid, feat_type_last, kernel_size=3),
+                    layers.EquivariantActNorm2d(feat_type_last.size),
+                    enn.ReLU(feat_type_last, inplace=True),
+                    enn.PointwiseAvgPoolAntialiased(feat_type_last, sigma=0.66, stride=2),
+                    enn.GroupPooling(feat_type_last),
                 )
             )
         self.classification_heads = nn.ModuleList(classification_heads)
-        self.logit_layer = nn.Linear(self.classification_hdim * len(classification_heads), self.n_classes)
+        self.logit_layer = nn.Linear(classification_heads[-1][-1].out_type.size, self.n_classes)
 
     def check_equivariance(self, r2_act, out_type, data, func, data_type=None):
         _, c, h, w = data.shape
@@ -295,9 +315,9 @@ class EquivariantResidualFlow(nn.Module):
             # Handle classification.
             if classify:
                 if self.factor_out:
-                    class_outs.append(self.classification_heads[idx](f))
+                    class_outs.append(self.classification_heads[idx](f).tensor)
                 else:
-                    class_outs.append(self.classification_heads[idx](x))
+                    class_outs.append(self.classification_heads[idx](x).tensor)
 
         out.append(x.tensor.squeeze())
         out = torch.cat([o.view(o.size()[0], -1) for o in out], 1)
@@ -354,9 +374,18 @@ class EquivariantResidualFlow(nn.Module):
         inv = self.forward(z.view(-1, *args.input_size[1:]), inverse=True)
 
         atol_list = [1e-1, 1e-2, 1e-3, 1e-4, 1e-5]
+        diff = x - inv
+        batch_size = x.shape[0]
+        diff = x.view(batch_size, -1) - inv.view(batch_size, -1)
+        avg_norm_diff = torch.norm(diff, p='fro', dim=-1).mean()
+        if avg_norm_diff > 1 or torch.isnan(avg_norm_diff):
+            ipdb.set_trace()
+            inv = self.forward(z.view(-1, *args.input_size[1:]), inverse=True)
+        print("Avg Diff is %f" %(avg_norm_diff))
         for atol in atol_list:
             res = torch.allclose(x, inv, atol)
             print("Invertiblity at %f: %s" %(atol, str(res)))
+        return avg_norm_diff
 
     def compute_loss(self, args, x, beta=1.0):
         bits_per_dim, logits_tensor = torch.zeros(1).to(x), torch.zeros(args.n_classes).to(x)
@@ -392,15 +421,10 @@ class EquivariantResidualFlow(nn.Module):
             bits_per_dim = -torch.mean(logpx) / (args.imagesize *
                                                  args.imagesize * args.im_dim) / np.log(2)
 
-            avg_logpz = torch.mean(logpz).detach()
-            avg_delta_logp = torch.mean(-delta_logp).detach()
+            logpz = torch.mean(logpz).detach()
+            delta_logp = torch.mean(-delta_logp).detach()
 
-        # if bits_per_dim < 0:
-            # ipdb.set_trace()
-            # inv = self.forward(z, inverse=True)
-            # torch.allclose(x, inv, atol=1e-4)
-
-        return bits_per_dim, logits_tensor, avg_logpz, avg_delta_logp, z
+        return bits_per_dim, logits_tensor, logpz, delta_logp, z
 
     def update_lipschitz(self, n_iterations=5):
         with torch.no_grad():
@@ -409,6 +433,14 @@ class EquivariantResidualFlow(nn.Module):
                     # m.compute_weight(update=True)
                 if isinstance(m, base_layers.InducedNormEquivarConv2d) or isinstance(m, base_layers.InducedNormLinear):
                     m.compute_weight(update=True, n_iterations=n_iterations)
+
+    def get_svd_constants(self):
+        lipschitz_constants = []
+        for m in self.modules():
+            if isinstance(m, layers.base.r2_conv.MyR2Conv):
+                lipschitz_constants.append(m.compute_svd())
+
+        return lipschitz_constants
 
     def get_lipschitz_constants(self):
         lipschitz_constants = []

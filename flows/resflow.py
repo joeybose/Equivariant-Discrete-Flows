@@ -286,9 +286,15 @@ class ResidualFlow(nn.Module):
         inv = self.forward(z.view(-1, *args.input_size[1:]), inverse=True)
 
         atol_list = [1e-1, 1e-2, 1e-3, 1e-4, 1e-5]
+        batch_size = x.shape[0]
+        diff = x.view(batch_size, -1) - inv.view(batch_size, -1)
+        avg_norm_diff = torch.norm(diff, p='fro', dim=-1).mean()
+        print("Avg Diff is %f" %(avg_norm_diff))
+        ipdb.set_trace()
         for atol in atol_list:
             res = torch.allclose(x, inv, atol)
             print("Invertiblity at %f: %s" %(atol, str(res)))
+        return avg_norm_diff
 
     def compute_loss(self, args, x, beta=1.0):
         bits_per_dim, logits_tensor = torch.zeros(1).to(x), torch.zeros(args.n_classes).to(x)
@@ -314,7 +320,6 @@ class ResidualFlow(nn.Module):
         elif args.task == 'classification':
             z, logits_tensor = self.forward(x.view(-1, *args.input_size[1:]), classify=True)
 
-        # ipdb.set_trace()
         if args.task in ['density', 'hybrid']:
             # log p(z)
             logpz = standard_normal_logprob(z).view(z.size(0), -1).sum(1, keepdim=True)

@@ -286,6 +286,13 @@ class MyR2Conv(EquivariantModule):
             # by default, the weights are initialized with a generalized form of He's weight initialization
             init.generalized_he_init(self.weights.data, self.basisexpansion)
 
+    def compute_svd(self):
+        _filter, _bias = self.expand_parameters()
+        u, s, vh = torch.linalg.svd(_filter, full_matrices=False)
+        max_singular_value = torch.max(s)
+        print("Max Singular Value %f" %(max_singular_value))
+        return max_singular_value
+
     def _update_u_v(self, filter):
         w = filter.clone()
         u = self.u.detach()

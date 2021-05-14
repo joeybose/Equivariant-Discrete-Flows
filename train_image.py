@@ -163,6 +163,8 @@ def do_train_epoch(args, epoch, flow_model, optim, train_loader, meters):
 
             if args.task in ['classification', 'hybrid']:
                 s += ' | CE {ce_meter.avg:.4f} | Acc {0:.4f}'.format(100 * correct / total, ce_meter=ce_meter)
+                if args.wandb:
+                    wandb.log({'Train Accuracy': 100 * correct / total, 'epoch': epoch})
 
             print(s)
         # if i % args.vis_freq == 0:
@@ -177,8 +179,9 @@ def check_invertibility(args, epoch, flow_model, test_loader):
     with torch.no_grad():
         for i, (x, y) in enumerate(tqdm(test_loader)):
             x = x.to(args.dev)
-            flow_model.check_invertibility(args, x)
+            avg_norm_diff = flow_model.check_invertibility(args, x)
             break
+    return avg_norm_diff
 
 def validate(args, epoch, flow_model, test_loader, ema=None):
     """
@@ -196,7 +199,7 @@ def validate(args, epoch, flow_model, test_loader, ema=None):
         lipschitz_constants.append(flow_model.get_lipschitz_constants())
         print('Valid Lipsch: {}'.format(utils.pretty_repr(lipschitz_constants[-1])))
 
-    check_invertibility(args, epoch, flow_model, test_loader)
+    avg_norm_diff = check_invertibility(args, epoch, flow_model, test_loader)
 
     # flow_model = utils.parallelize(flow_model)
     flow_model.eval()
@@ -224,10 +227,12 @@ def validate(args, epoch, flow_model, test_loader, ema=None):
         # ema.swap()
     s = 'Epoch: [{0}]\tTime {1:.2f} | Test bits/dim {bpd_meter.avg:.4f}'.format(epoch, val_time, bpd_meter=bpd_meter)
     if args.wandb:
-        wandb.log({'Test BPD': bpd_meter.avg})
+        wandb.log({'Test BPD': bpd_meter.avg, 'Avg Norm Diff': avg_norm_diff})
 
     if args.task in ['classification', 'hybrid']:
         s += ' | CE {:.4f} | Acc {:.2f}'.format(ce_meter.avg, 100 * correct / total)
+        if args.wandb:
+            wandb.log({'Test Accuracy': 100 * correct / total})
     print(s)
     return bpd_meter.avg
 
@@ -283,7 +288,8 @@ def main(args):
     if args.squeeze_first:
         args.input_size = (input_size[0], input_size[1] * 4, input_size[2] // 2, input_size[3] // 2)
     if args.model_type == 'E_resflow' or args.model_type == 'Mixed_resflow':
-        args.init_layer = layers.EquivariantLogitTransform(args.logit_init)
+        # args.init_layer = layers.EquivariantLogitTransform(args.logit_init)
+        args.init_layer = None
         args.squeeze_layer = layers.EquivariantSqueezeLayer(2)
     else:
         args.init_layer = layers.LogitTransform(args.logit_init)

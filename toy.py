@@ -40,10 +40,13 @@ def train_flow(args, flow, optim):
     for i in range(args.num_iters):
         if args.dataset is None:
             data, y = datasets.make_moons(128, noise=.1)
-            data = torch.tensor(data, dtype=torch.float32).to(args.dev)
+            # data = torch.tensor(data, dtype=torch.float32).to(args.dev)
+            data = torch.tensor(data, dtype=torch.float32, device=args.dev)
         else:
             data = create_dataset(args, args.dataset)
-            data = torch.from_numpy(data).type(torch.float32).to(args.dev)
+            # data = torch.from_numpy(data).type(torch.float32).to(args.dev)
+            # data = torch.from_numpy(data, device=args.dev).type(torch.float32)
+            data = torch.tensor(data, dtype=torch.float32, device=args.dev)
         optim.zero_grad()
         beta = min(1, itr / args.annealing_iters) if args.annealing_iters > 0 else 1.
         # ipdb.set_trace()
@@ -62,7 +65,6 @@ def train_flow(args, flow, optim):
         loss.backward()
         # grad_norm = torch.nn.utils.clip_grad.clip_grad_norm_(flow.parameters(), 1.)
         optim.step()
-
         if 'resflow' in args.model_type:
             flow.beta = beta
             flow.update_lipschitz(args.n_lipschitz_iters)
@@ -77,9 +79,26 @@ def train_flow(args, flow, optim):
             )
         )
 
+        if (i + 1) % args.test_interval == 0 or i == args.num_iters:
+            test_data = create_dataset(args, args.dataset)
+            # data = torch.from_numpy(data).type(torch.float32).to(args.dev)
+            # test_data = torch.from_numpy(test_data, device=args.dev).type(torch.float32)
+            test_data = torch.tensor(test_data, dtype=torch.float32, device=args.dev)
+            flow.update_lipschitz(200)
+            with torch.no_grad():
+                flow.eval()
+                test_loss, test_logpz, test_delta_logp = flow.log_prob(inputs=test_data)
+                print(
+                    '[TEST] Iter {:04d} | Test Loss {:.6f} '
+                    '| Test Logp(z) {:.6f} | Test DeltaLogp {:.6f}'.format(
+                        i, test_loss.item(), test_logpz.item(), test_delta_logp.item()
+                    )
+                )
+                flow.train()
 
         if (i + 1) % args.log_interval == 0 and args.plot:
             print("Log Likelihood at %d is %f" %(i+1, loss))
+            flow.update_lipschitz(200)
             with torch.no_grad():
                 flow.eval()
                 p_samples = sample_2d_data(args.dataset, 400)
@@ -91,7 +110,7 @@ def train_flow(args, flow, optim):
                     p_samples, torch.randn, flow.standard_normal_logprob, transform=sample_fn, inverse_transform=density_fn,
                     samples=True, npts=100, device=args.dev
                 )
-                plt.savefig('figures/{}_{}.png'.format(args.plot_name, str(i+1)))
+                plt.savefig('figures/E_figures/{}_{}.png'.format(args.plot_name, str(i+1)))
                 plt.close()
                 flow.train()
 
@@ -126,7 +145,7 @@ if __name__ == '__main__':
     # i-Resnet params
     parser.add_argument('--coeff', type=float, default=0.9)
     parser.add_argument('--vnorms', type=str, default='222222')
-    parser.add_argument('--n-lipschitz-iters', type=int, default=5)
+    parser.add_argument('--n-lipschitz-iters', type=int, default=100)
     parser.add_argument('--atol', type=float, default=None)
     parser.add_argument('--rtol', type=float, default=None)
     parser.add_argument('--learn-p', type=eval, choices=[True, False], default=False)
@@ -148,6 +167,7 @@ if __name__ == '__main__':
     parser.add_argument('--n-dist', choices=['geometric', 'poisson'], default='geometric')
     # training parameters
     parser.add_argument('--log_interval', type=int, default=10, help='How often to save model and samples.')
+    parser.add_argument('--test_interval', type=int, default=50, help='How often to save model and samples.')
     parser.add_argument('--batch_size', type=int, default=5000)
     parser.add_argument('--test_batch_size', type=int, default=10000)
     parser.add_argument('--lr', type=float, default=1e-3)

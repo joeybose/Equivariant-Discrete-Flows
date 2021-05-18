@@ -151,7 +151,7 @@ class ActNorm2d(ActNormNd):
     def shape(self):
         return [1, -1, 1, 1]
 
-class EquivariantActNorm1d(ActNormNd):
+class EquivariantActNorm1d(EquivariantActNormNd):
 
     @property
     def shape(self):

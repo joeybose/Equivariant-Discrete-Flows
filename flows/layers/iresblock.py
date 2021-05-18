@@ -408,23 +408,22 @@ class MemoryEfficientLogDetEstimator(torch.autograd.Function):
     def forward(ctx, estimator_fn, gnet, x, n_power_series, vareps, coeff_fn, training, *g_params):
         ctx.training = training
         with torch.enable_grad():
-            with torch.autograd.detect_anomaly():
-                x = x.detach().requires_grad_(True)
-                g = gnet(x)
-                is_this_a_tensor = torch.is_tensor(g)
-                if not is_this_a_tensor:
-                    g = g.tensor
-                ctx.g = g
-                ctx.x = x
-                logdetgrad = estimator_fn(g, x, n_power_series, vareps, coeff_fn, training)
+            x = x.detach().requires_grad_(True)
+            g = gnet(x)
+            is_this_a_tensor = torch.is_tensor(g)
+            if not is_this_a_tensor:
+                g = g.tensor
+            ctx.g = g
+            ctx.x = x
+            logdetgrad = estimator_fn(g, x, n_power_series, vareps, coeff_fn, training)
 
-                if training:
-                    grad_x, *grad_params = torch.autograd.grad(
-                        logdetgrad.sum(), (x,) + g_params, retain_graph=True, allow_unused=True
-                    )
-                    if grad_x is None:
-                        grad_x = torch.zeros_like(x)
-                    ctx.save_for_backward(grad_x, *g_params, *grad_params)
+            if training:
+                grad_x, *grad_params = torch.autograd.grad(
+                    logdetgrad.sum(), (x,) + g_params, retain_graph=True, allow_unused=True
+                )
+                if grad_x is None:
+                    grad_x = torch.zeros_like(x)
+                ctx.save_for_backward(grad_x, *g_params, *grad_params)
 
         return safe_detach(g), safe_detach(logdetgrad)
 

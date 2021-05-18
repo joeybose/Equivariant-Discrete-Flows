@@ -519,7 +519,7 @@ class EquivariantToyResFlow(nn.Module):
         self.input_type = enn.FieldType(self.group_action_type, [self.group_action_type.trivial_repr])
         dims = [2] + list(map(int, args.dims.split('-'))) + [2]
         blocks = []
-        if self.args.actnorm: blocks.append(layers.ActNorm1d(2))
+        if self.args.actnorm: blocks.append(layers.EquivariantActNorm1d(2))
         for _ in range(n_blocks):
             blocks.append(
                 layers.Equivar_iResBlock(
@@ -533,7 +533,7 @@ class EquivariantToyResFlow(nn.Module):
                     grad_in_forward=True,
                 )
             )
-            if self.args.actnorm: blocks.append(layers.ActNorm1d(2))
+            if self.args.actnorm: blocks.append(layers.EquivariantActNorm1d(2))
             if self.args.batchnorm: blocks.append(layers.MovingBatchNorm1d(2))
         self.flow_model = layers.SequentialFlow(blocks)
 
@@ -557,7 +557,7 @@ class EquivariantToyResFlow(nn.Module):
                     in_type,
                     out_type,
                     self.group_action_type,
-                    kernel_size=3,
+                    kernel_size=self.args.kernel_size,
                     stride=1,
                     padding=1,
                     coeff=self.args.coeff,

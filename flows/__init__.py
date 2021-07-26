@@ -18,7 +18,9 @@ kwargs_flows = {'MAFRealNVP': MAFRealNVP, 'RealNVP': RealNVP, "Toy": toy_flow,
                 "E_convexp": EquivariantConvExp}
 
 def create_flow(arg_parse: argparse.Namespace, model_type: str, *args: Any, **kwargs: Any):
-    if arg_parse.dataset in ["8gaussians", "2spirals", "checkerboard", "rings", "pinwheel", "swissroll", "circles", "line", "cos"]:
+    if arg_parse.dataset in ["8gaussians", "2spirals", "checkerboard", "rings",
+                             "pinwheel", "swissroll", "circles", "line", "cos",
+                             "dw4"]:
         flow_model = kwargs_flows[model_type](arg_parse, int(arg_parse.n_blocks),
                                               arg_parse.input_size,
                                               arg_parse.hidden_dim,

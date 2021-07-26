@@ -54,9 +54,11 @@ def do_train_epoch(args, epoch, flow_model, optim, train_loader, meters):
         #   maximize log p(x) = log p(z) - log |det df/dx|
 
         x = x.to(args.dev)
+        flow_model.check_invariant_log_prob(flow_model.group_action_type,
+                                            flow_model.input_type, x)
 
-        if 'resflow' in args.model_type:
-            flow_model.update_lipschitz(args.n_lipschitz_iters)
+        # if 'resflow' in args.model_type:
+            # flow_model.update_lipschitz(args.n_lipschitz_iters)
 
         beta = beta = min(1, global_itr / args.annealing_iters) if args.annealing_iters > 0 else 1.
         bpd, logits, logpz, neg_delta_logp, z = flow_model.compute_loss(args, x, beta=beta)
@@ -72,9 +74,6 @@ def do_train_epoch(args, epoch, flow_model, optim, train_loader, meters):
             del neg_delta_logp
             del z
             torch.cuda.empty_cache()
-            # with torch.no_grad():
-                # ipdb.set_trace()
-                # inv = flow_model.forward(z_out, inverse=True)
 
         if do_update:
             if args.task in ['density', 'hybrid']:
@@ -195,7 +194,7 @@ def validate(args, epoch, flow_model, test_loader, ema=None):
 
     lipschitz_constants = []
     if 'resflow' in args.model_type:
-        flow_model.update_lipschitz(100)
+        flow_model.update_lipschitz(400)
         lipschitz_constants.append(flow_model.get_lipschitz_constants())
         print('Valid Lipsch: {}'.format(utils.pretty_repr(lipschitz_constants[-1])))
 
@@ -252,8 +251,20 @@ def train_flow(args, flow, optim, scheduler, train_loader, test_loader):
     meters = [batch_time, bpd_meter, logpz_meter, deltalogp_meter,
               firmom_meter, secmom_meter, gnorm_meter, ce_meter, ema,
               weightnorm_meter]
+
     lipschitz_constants = []
-    check_invertibility(args,0 , flow, test_loader)
+    flow.eval()
+    last_checkpoints = None
+    # resume_path = utils.save_checkpoint({'state_dict': flow.state_dict(),
+                                         # 'optimizer_state_dict':
+                                         # optim.state_dict(), 'args': args,
+                                         # 'test_bpd': torch.tensor([0]), },
+                                        # os.path.join(args.save, 'models'), 0,
+                                        # last_checkpoints, num_checkpoints=5)
+
+
+    best_test_bpd = math.inf
+
     for epoch in range(args.num_iters):
 
         print('Current LR {}'.format(optim.param_groups[0]['lr']))
@@ -269,6 +280,13 @@ def train_flow(args, flow, optim, scheduler, train_loader, test_loader):
         else:
             test_bpd = validate(args, epoch, flow, test_loader)
 
+        if test_bpd < best_test_bpd:
+            resume_path = utils.save_checkpoint({'state_dict': flow.state_dict(),
+                                                 'optimizer_state_dict':
+                                                 optim.state_dict(), 'args': args,
+                                                 'test_bpd': torch.tensor([0]), },
+                                                os.path.join(args.save, 'models'), 0,
+                                                last_checkpoints, num_checkpoints=5)
         # if args.scheduler and scheduler is not None:
             # scheduler.step()
 
@@ -334,7 +352,7 @@ if __name__ == '__main__':
     parser.add_argument('--coeff', type=float, default=0.98)
     parser.add_argument('--logit_init', type=float, default=1e-6, help='Logit layer init')
     parser.add_argument('--vnorms', type=str, default='2222')
-    parser.add_argument('--n-lipschitz-iters', type=int, default=5)
+    parser.add_argument('--n-lipschitz-iters', type=int, default=200)
     parser.add_argument('--sn-tol', type=float, default=1e-3)
     parser.add_argument('--learn-p', type=eval, choices=[True, False], default=False)
 
@@ -385,7 +403,7 @@ if __name__ == '__main__':
     parser.add_argument('--wd', help='Weight decay', type=float, default=0)
     parser.add_argument('--warmup-iters', type=int, default=1000)
     parser.add_argument('--annealing-iters', type=int, default=0)
-    parser.add_argument('--save', help='directory to save results', type=str, default='figures/mnist_doublepad')
+    parser.add_argument('--save', help='directory to save results', type=str, default='runs/')
     parser.add_argument('--val-batchsize', help='minibatch size', type=int, default=200)
     parser.add_argument('--validation', type=eval, choices=[True, False], default=True)
     parser.add_argument('--ema-val', type=eval, choices=[True, False], default=True)

@@ -447,7 +447,6 @@ class EquivariantConvExp(nn.Module):
         z = enn.GeometricTensor(z, self.input_type)
         for i in reversed(range(0,self.n_blocks)):
             filter = list(self.flow_model[i][0].named_modules())[0][1].expand_parameters()[0]
-            # ipdb.set_trace()
             z = conv_exp(z.tensor, filter, terms=self.n_terms)
             z = self.invertible_tanh(z)
             z = enn.GeometricTensor(z, self.input_type)
@@ -456,7 +455,6 @@ class EquivariantConvExp(nn.Module):
         return z.tensor.squeeze(), log_det_J.view(-1,1)
 
     def log_prob(self, inputs, beta=1.):
-        # ipdb.set_trace()
         z, delta_logp = self.forward(inputs)
         # x, delta_logp_ = self.forward(z, inverse=True)
         # print(torch.allclose(x, inputs, atol=1e-3))
@@ -511,13 +509,14 @@ class EquivariantToyResFlow(nn.Module):
         super(EquivariantToyResFlow, self).__init__()
         self.args = args
         self.beta = args.beta
+        self.input_size = input_size
         self.n_blocks = n_blocks
         self.activation_fn = ACT_FNS[args.act]
         self.group_action_type = GROUPS[args.group]
-        # self.group_action_type = gspaces.FlipRot2dOnR2(N=4)
         self.group_card = len(list(self.group_action_type.testing_elements))
-        self.input_type = enn.FieldType(self.group_action_type, [self.group_action_type.trivial_repr])
-        dims = [2] + list(map(int, args.dims.split('-'))) + [2]
+        self.input_type = enn.FieldType(self.group_action_type, self.args.nc*[self.group_action_type.trivial_repr])
+        # dims = [2] + list(map(int, args.dims.split('-'))) + [2]
+        dims = [args.input_dim] + list(map(int, args.dims.split('-'))) + [args.input_dim]
         blocks = []
         if self.args.actnorm: blocks.append(layers.EquivariantActNorm1d(2))
         for _ in range(n_blocks):
@@ -547,7 +546,7 @@ class EquivariantToyResFlow(nn.Module):
                 domains = [torch.nn.Parameter(torch.tensor(0.))] * len(domains)
             codomains = domains[1:] + [domains[0]]
 
-        in_type = enn.FieldType(self.group_action_type, [self.group_action_type.trivial_repr])
+        in_type = enn.FieldType(self.group_action_type, self.args.nc*[self.group_action_type.trivial_repr])
         out_dims = int(dims[1:][0] / self.group_card)
         out_type = enn.FieldType(self.group_action_type, out_dims*[self.group_action_type.regular_repr])
         total_layers = len(domains)
@@ -572,7 +571,7 @@ class EquivariantToyResFlow(nn.Module):
             nnet.append(activation_fn(nnet[-1].out_type, inplace=True))
             in_type = nnet[-1].out_type
             if i == total_layers - 2:
-                out_type = enn.FieldType(self.group_action_type, [self.group_action_type.trivial_repr])
+                out_type = enn.FieldType(self.group_action_type, self.args.nc*[self.group_action_type.trivial_repr])
             else:
                 out_type = enn.FieldType(self.group_action_type, out_dim*[self.group_action_type.regular_repr])
 
@@ -623,17 +622,23 @@ class EquivariantToyResFlow(nn.Module):
         # return x
 
     def forward(self, x):
-        x = enn.GeometricTensor(x.view(-1, 1, 1, 2), self.input_type)
+        # ipdb.set_trace()
+        # x = enn.GeometricTensor(x.view(-1, self.args.nc, 1, 2), self.input_type)
+        x = enn.GeometricTensor(x.view(-1, self.args.nc, 1, self.args.input_dim), self.input_type)
         zero = torch.zeros(x.shape[0], 1).to(self.args.dev)
 
         # transform to z
         z, delta_logp = self.flow_model(x, zero)
         return z.tensor.squeeze(), delta_logp
 
-    def log_prob(self, inputs):
+    def log_prob(self, inputs, prior=None):
         z, delta_logp = self.forward(inputs)
         # compute log p(z)
-        logpz = self.standard_normal_logprob(z).sum(1, keepdim=True)
+        if prior is None:
+            logpz = self.standard_normal_logprob(z).sum(1, keepdim=True)
+        else:
+            logpz = -1*prior.energy(z)
+            # nll = (prior.energy(z).view(-1) + delta_logp.view(-1)).mean()
 
         logpx = logpz - self.beta * delta_logp
         loss = -torch.mean(logpx)
@@ -659,3 +664,39 @@ class EquivariantToyResFlow(nn.Module):
             output_rg = enn.GeometricTensor(output_rg.tensor.cpu(), out_type)
             data = enn.GeometricTensor(data.tensor.squeeze().view(-1,1,1,2).cuda(),input_type)
             assert torch.allclose(rg_output.tensor.cpu().squeeze(), output_rg.tensor.squeeze(), atol=1e-5), g
+
+    def check_invertibility(self, args, x):
+        z, delta_logp = self.forward(x)
+        inv = self.inverse(z)
+
+        atol_list = [1e-1, 1e-2, 1e-3, 1e-4, 1e-5]
+        diff = x - inv
+        batch_size = x.shape[0]
+        diff = x.view(batch_size, -1) - inv.view(batch_size, -1)
+        avg_norm_diff = torch.norm(diff, p='fro', dim=-1).mean()
+        if avg_norm_diff > 1 or torch.isnan(avg_norm_diff):
+            ipdb.set_trace()
+            inv = self.forward(z.view(-1, *args.input_size[1:]), inverse=True)
+        print("Avg Diff is %f" %(avg_norm_diff))
+        for atol in atol_list:
+            res = torch.allclose(x, inv, atol)
+            print("Invertiblity at %f: %s" %(atol, str(res)))
+        return avg_norm_diff
+
+    def check_invariant_log_prob(self, r2_act, out_type, data, data_type=None):
+        _, c, h, w = data.shape
+        input_type = enn.FieldType(r2_act, self.c*[r2_act.trivial_repr])
+        data = enn.GeometricTensor(data.view(-1, c, h, w).cpu(), input_type).to(self.args.dev)
+        for g in r2_act.testing_elements:
+            output = self.log_prob(self.args, data.tensor)
+            data = enn.GeometricTensor(data.tensor.view(-1, c, h, w).cpu(), input_type)
+            x_transformed = enn.GeometricTensor(data.transform(g).tensor.cpu().view(-1, c, h, w).cuda(), input_type)
+
+            output_rg = self.log_prob(self.args, x_transformed.tensor)
+            # Equivariance Condition
+            data = enn.GeometricTensor(data.tensor.squeeze().view(-1, c, h , w).cuda(), input_type)
+            diff = torch.exp(output.squeeze()) - torch.exp(output_rg.squeeze())
+            avg_norm_diff = torch.norm(diff, p='fro', dim=-1).mean()
+            print("Avg Norm Diff: %f | G: %d" %(avg_norm_diff, g))
+            assert torch.allclose(torch.exp(output.squeeze()), torch.exp(output_rg.squeeze()), atol=1e-5), g
+        print("Passed Invariance Test")

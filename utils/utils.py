@@ -687,3 +687,31 @@ def monitor_weight_norm(model):
         total_norm += param_norm ** 2
     total_norm = total_norm ** (1. / 2)
     return total_norm
+
+def save_checkpoint(state, save, epoch, last_checkpoints=None, num_checkpoints=None):
+    if not os.path.exists(save):
+        os.makedirs(save)
+    filename = os.path.join(save, 'checkpt-%04d.pth' % epoch)
+    torch.save(state, filename)
+
+    if last_checkpoints is not None and num_checkpoints is not None:
+        last_checkpoints.append(epoch)
+        if len(last_checkpoints) > num_checkpoints:
+            rm_epoch = last_checkpoints.pop(0)
+            os.remove(os.path.join(save, 'checkpt-%04d.pth' % rm_epoch))
+    return filename
+
+def load_checkpoint(args, resume_path, flow, optim):
+    checkpt = torch.load(resume_path)
+    sd = {k: v for k, v in checkpt['state_dict'].items() if 'last_n_samples' not in k}
+    state = flow.state_dict()
+    state.update(sd)
+    flow.load_state_dict(state, strict=True)
+    # ema.set(checkpt['ema'])
+    if 'optimizer_state_dict' in checkpt:
+        optim.load_state_dict(checkpt['optimizer_state_dict'])
+        # Manually move optimizer state to GPU
+        for state in optim.state.values():
+            for k, v in state.items():
+                if torch.is_tensor(v):
+                    state[k] = v.to(args.dev)

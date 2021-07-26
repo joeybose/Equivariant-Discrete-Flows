@@ -6,15 +6,47 @@ from .mnist_fliprot_code import data_loader_mnist_fliprot
 from .mnist12k_code import data_loader_mnist12k
 from .cifar10_code import data_loader_cifar10
 from .point_cloud import SpatialMNIST, ModelNet
+from .energy_datasets import IndexBatchIterator, BatchIterator, remove_mean, MeanFreeNormalPrior
 import argparse
+import numpy as np
 import ipdb
 
 def create_dataset(arg_parse: argparse.Namespace, dataset_type: str, *args: Any, **kwargs: Any):
     dataset_type = dataset_type.lower()
     if dataset_type in ["8gaussians", "2spirals", "checkerboard", "rings", "pinwheel", "swissroll", "circles", "line", "cos"]:
+        arg_parse.nc = 1
         return sample_2d_data(dataset_type, arg_parse.batch_size)
     elif dataset_type in ["u1", "u2", "u3", "u4"]:
+        arg_parse.nc = 1
         return potential_fn(dataset_type)
+    elif dataset_type == "dw4":
+        dim = 8
+        arg_parse.input_dim = 2 #dim
+        n_particles = 4
+        # arg_parse.nc = n_particles
+
+        # DW parameters
+        a=0.9
+        b=-4
+        c=0
+        offset=4
+        n_data = 1000
+        data, idx = np.load("./data/MCMC_data/dw4-dataidx.npy", allow_pickle=True)
+        data = data.reshape(-1, dim)
+        data  = remove_mean(data, n_particles, dim // n_particles)
+        idx = np.random.choice(len(data), len(data), replace=False)
+        arg_parse.data = data
+        arg_parse.idx = idx
+
+        data_smaller = data[idx[:n_data]].clone()
+        # batch_iter = IndexBatchIterator(len(data_smaller), n_batch)
+        # return batch_iter
+        if arg_parse.mean_free_prior:
+            prior = MeanFreeNormalPrior(dim, n_particles)
+        else:
+            prior = None
+        batch_iter = BatchIterator(len(data), arg_parse.batch_size)
+        return data_smaller, data, batch_iter, prior
     elif dataset_type == "mnist_rot":
         if arg_parse.double_padding:
             arg_parse.im_dim = 2

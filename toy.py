@@ -30,26 +30,41 @@ from e2cnn import nn as enn
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-def train_flow(args, flow, optim):
+def train_flow(args):
     time_meter = RunningAverageMeter(0.93)
     loss_meter = RunningAverageMeter(0.93)
     logpz_meter = RunningAverageMeter(0.93)
     delta_logp_meter = RunningAverageMeter(0.93)
     end = time.time()
+
+    ipdb.set_trace()
+    if args.dataset is None:
+        data, y = datasets.make_moons(128, noise=.1)
+        # data = torch.tensor(data, dtype=torch.float32).to(args.dev)
+        data = torch.tensor(data, dtype=torch.float32, device=args.dev)
+    else:
+        data = create_dataset(args, args.dataset)
+        # data = torch.from_numpy(data).type(torch.float32).to(args.dev)
+        # data = torch.from_numpy(data, device=args.dev).type(torch.float32)
+        data = torch.tensor(data, dtype=torch.float32, device=args.dev)
+
+    flow = create_flow(args, args.model_type)
+    print("Number of trainable parameters: {}".format(count_parameters(flow.flow_model)))
+    optimizer = optim.Adam(flow.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     flow.train()
+
     for i in range(args.num_iters):
-        if args.dataset is None:
-            data, y = datasets.make_moons(128, noise=.1)
-            # data = torch.tensor(data, dtype=torch.float32).to(args.dev)
-            data = torch.tensor(data, dtype=torch.float32, device=args.dev)
-        else:
-            data = create_dataset(args, args.dataset)
-            # data = torch.from_numpy(data).type(torch.float32).to(args.dev)
-            # data = torch.from_numpy(data, device=args.dev).type(torch.float32)
-            data = torch.tensor(data, dtype=torch.float32, device=args.dev)
+        # if args.dataset is None:
+            # data, y = datasets.make_moons(128, noise=.1)
+            # # data = torch.tensor(data, dtype=torch.float32).to(args.dev)
+            # data = torch.tensor(data, dtype=torch.float32, device=args.dev)
+        # else:
+            # data = create_dataset(args, args.dataset)
+            # # data = torch.from_numpy(data).type(torch.float32).to(args.dev)
+            # # data = torch.from_numpy(data, device=args.dev).type(torch.float32)
+            # data = torch.tensor(data, dtype=torch.float32, device=args.dev)
         optim.zero_grad()
         beta = min(1, itr / args.annealing_iters) if args.annealing_iters > 0 else 1.
-        # ipdb.set_trace()
         loss, logpz, delta_logp = flow.log_prob(inputs=data)
         try:
             if len(logpz) > 0:
@@ -119,10 +134,7 @@ def train_flow(args, flow, optim):
 
 def main(args):
     args.input_size = (args.batch_size, 1, 1, 2)
-    flow = create_flow(args, args.model_type)
-    print("Number of trainable parameters: {}".format(count_parameters(flow.flow_model)))
-    optimizer = optim.Adam(flow.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    train_flow(args, flow, optimizer)
+    train_flow(args)
 
 
 if __name__ == '__main__':
@@ -136,7 +148,7 @@ if __name__ == '__main__':
     # target density
     parser.add_argument('--model_type', type=str, default="Toy", help='Which Flow to use.')
     parser.add_argument('--dataset', type=str, default=None, help='Which potential function to approximate.')
-    # parser.add_argument('--nsamples', type=int, default=500, help='Number of Samples to Use')
+    parser.add_argument('--nsamples', type=int, default=500, help='Number of Samples to Use')
     # model parameters
     parser.add_argument('--input_size', type=int, default=2, help='Dimension of the data.')
     parser.add_argument('--hidden_dim', type=int, default=32, help='Dimensions of hidden layers.')

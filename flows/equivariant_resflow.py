@@ -294,6 +294,24 @@ class EquivariantResidualFlow(nn.Module):
             assert torch.allclose(rg_output.tensor.cpu().squeeze(), output_rg.tensor.squeeze(), atol=1e-5), g
         print("Passed Equivariance Test")
 
+    def check_invariant_log_prob(self, r2_act, out_type, data, data_type=None):
+        _, c, h, w = data.shape
+        input_type = enn.FieldType(r2_act, self.c*[r2_act.trivial_repr])
+        data = enn.GeometricTensor(data.view(-1, c, h, w).cpu(), input_type).to(self.args.dev)
+        for g in r2_act.testing_elements:
+            output = self.log_prob(self.args, data.tensor)
+            data = enn.GeometricTensor(data.tensor.view(-1, c, h, w).cpu(), input_type)
+            x_transformed = enn.GeometricTensor(data.transform(g).tensor.cpu().view(-1, c, h, w).cuda(), input_type)
+
+            output_rg = self.log_prob(self.args, x_transformed.tensor)
+            # Equivariance Condition
+            data = enn.GeometricTensor(data.tensor.squeeze().view(-1, c, h , w).cuda(), input_type)
+            diff = torch.exp(output.squeeze()) - torch.exp(output_rg.squeeze())
+            avg_norm_diff = torch.norm(diff, p='fro', dim=-1).mean()
+            print("Avg Norm Diff: %f | G: %d" %(avg_norm_diff, g))
+            assert torch.allclose(torch.exp(output.squeeze()), torch.exp(output_rg.squeeze()), atol=1e-5), g
+        print("Passed Invariance Test")
+
     def forward(self, x_in, logpx=None, inverse=False, classify=False):
         x = enn.GeometricTensor(x_in.view(-1, self.c, self.h, self.w), self.input_type)
         if inverse:
@@ -386,6 +404,33 @@ class EquivariantResidualFlow(nn.Module):
             res = torch.allclose(x, inv, atol)
             print("Invertiblity at %f: %s" %(atol, str(res)))
         return avg_norm_diff
+
+    def log_prob(self, args, x, beta=1.0):
+        bits_per_dim, logits_tensor = torch.zeros(1).to(x), torch.zeros(args.n_classes).to(x)
+        logpz, delta_logp = torch.zeros(1).to(x), torch.zeros(1).to(x)
+        if args.dataset == 'celeba_5bit':
+            nvals = 32
+        elif args.dataset == 'celebahq':
+            nvals = 2**args.nbits
+        else:
+            nvals = 256
+
+        x, logpu = add_padding(args, x, nvals)
+
+        if args.squeeze_first:
+            x = squeeze_layer(x)
+
+        z, delta_logp = self.forward(x.view(-1, *args.input_size[1:]), 0)
+
+        # log p(z)
+        logpz = standard_normal_logprob(z).view(z.size(0), -1).sum(1, keepdim=True)
+
+        # log p(x)
+        logpx = logpz - beta * delta_logp - np.log(nvals) * (
+            args.imagesize * args.imagesize * (args.im_dim + args.padding)
+        ) - logpu
+
+        return logpx
 
     def compute_loss(self, args, x, beta=1.0):
         bits_per_dim, logits_tensor = torch.zeros(1).to(x), torch.zeros(args.n_classes).to(x)

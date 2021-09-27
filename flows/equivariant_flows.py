@@ -78,6 +78,7 @@ class EquivariantRealNVP(nn.Module):
         _, self.c, self.h, self.w = input_size[:]
         assert self.c > 1
         mask = torch.arange(self.c).float() % 2
+        self.args = args
         self.n_blocks = int(n_blocks)
         self.n_hidden = n_hidden
         self.group_action_type = GROUPS[args.group]
@@ -163,17 +164,53 @@ class EquivariantRealNVP(nn.Module):
             log_det_J -= (inverse_fiber_batch_mask*s).sum(dim=(1,2,3))
         return z.squeeze(), log_det_J.view(-1, 1)
 
-    def log_prob(self, inputs, beta=1.):
+    def log_prob(self, inputs, prior=None, beta=1.):
         z, delta_logp = self.forward(inputs)
         # compute log p(z)
-        logpz = standard_normal_logprob(z).view(z.size(0), -1).sum(1, keepdim=True)
-        logpx = logpz - beta * delta_logp
+        if prior is None:
+            logpz = standard_normal_logprob(z).view(z.size(0), -1).sum(1, keepdim=True)
+        else:
+            logpz = -1*prior.energy(z)
+        logpx = logpz + beta * delta_logp
         # loss = -torch.mean(logpx)
         # return loss, torch.mean(logpz), torch.mean(-delta_logp), None
         # print("NLL %f " % (-loss.item()))
         return logpx, logpz, -1*delta_logp
 
-    def compute_loss(self, args, inputs, beta=1.):
+    def compute_avg_test_loss(self, args, r2_act, data, beta=1.):
+        _, c, h, w = data.shape
+        input_type = enn.FieldType(r2_act, self.c*[r2_act.trivial_repr])
+        bits_per_dim, logits_tensor = torch.zeros(1).to(data), torch.zeros(args.n_classes).to(data)
+        logpz, delta_logp = torch.zeros(1).to(data), torch.zeros(1).to(data)
+        logpx_list = []
+        data = enn.GeometricTensor(data.cpu(), self.input_type)
+        if args.dataset == 'celeba_5bit':
+            nvals = 32
+        elif args.dataset == 'celebahq':
+            nvals = 2**args.nbits
+        else:
+            nvals = 256
+
+        for g in r2_act.testing_elements:
+            x_transformed = data.transform(g).tensor.view(-1, c, h, w).cuda()
+            padded_inputs, logpu = add_padding(args, x_transformed, nvals)
+            _, logpz, delta_logp = self.log_prob(padded_inputs)
+
+            # log p(x)
+            logpx = logpz - beta * delta_logp - np.log(nvals) * (
+                args.imagesize * args.imagesize * (args.im_dim + args.padding)
+            ) - logpu
+            logpx_list.append(logpx)
+
+        logpx_total = torch.vstack(logpx_list)
+        bits_per_dim = -torch.mean(logpx_total) / (args.imagesize *
+                                             args.imagesize * args.im_dim) / np.log(2)
+
+        return bits_per_dim
+
+    def compute_loss(self, args, inputs, beta=1., do_test=False):
+        if do_test:
+            return self.compute_avg_test_loss(args, self.group_action_type, inputs)
         bits_per_dim, logits_tensor = torch.zeros(1).to(inputs), torch.zeros(args.n_classes).to(inputs)
         logpz, delta_logp = torch.zeros(1).to(inputs), torch.zeros(1).to(inputs)
         # z, _ = self.forward(inputs)
@@ -188,7 +225,7 @@ class EquivariantRealNVP(nn.Module):
         # z, _ = self.forward(inputs)
         # x, _ = self.inverse(z)
         padded_inputs, logpu = add_padding(args, inputs, nvals)
-        _, logpz, delta_logp = self.log_prob(padded_inputs, beta)
+        _, logpz, delta_logp = self.log_prob(padded_inputs, beta=beta)
 
         # log p(x)
         logpx = logpz - beta * delta_logp - np.log(nvals) * (
@@ -245,6 +282,24 @@ class EquivariantRealNVP(nn.Module):
 
             assert torch.allclose(y_from_x_transformed.tensor.squeeze(), y_transformed_from_x.tensor.squeeze(), atol=1e-5), g
         print("Passed Invariance Test")
+
+    def check_invariant_log_prob(self, r2_act, out_type, data, data_type=None):
+        _, c, h, w = data.shape
+        input_type = enn.FieldType(r2_act, self.c*[r2_act.trivial_repr])
+        data = enn.GeometricTensor(data.view(-1, c, h, w).cpu(), input_type).to(self.args.dev)
+        for g in r2_act.testing_elements:
+            output, dummy, _ = self.log_prob(data.tensor)
+            data = enn.GeometricTensor(data.tensor.view(-1, c, h, w).cpu(), input_type)
+            x_transformed = enn.GeometricTensor(data.transform(g).tensor.cpu().view(-1, c, h, w).cuda(), input_type)
+
+            output_rg, dummy_rg, _ = self.log_prob(x_transformed.tensor)
+            # Equivariance Condition
+            data = enn.GeometricTensor(data.tensor.squeeze().view(-1, c, h , w).cuda(), input_type)
+            diff = torch.exp(output.squeeze()) - torch.exp(output_rg.squeeze())
+            avg_norm_diff = torch.norm(diff, p='fro', dim=-1).mean()
+            print("Avg Norm Diff: %f | G: %d" %(avg_norm_diff, g))
+            assert torch.allclose(torch.exp(output.squeeze()), torch.exp(output_rg.squeeze()), atol=1e-5), g
+        print("Passed E-Resflow Invariance Test")
 
 ## Inspired from: https://github.com/senya-ashukha/real-nvp-pytorch/blob/master/real-nvp-pytorch.ipynb
 class FiberRealNVP(nn.Module):
@@ -332,7 +387,40 @@ class FiberRealNVP(nn.Module):
         # print("NLL %f " % (-loss.item()))
         return logpx, logpz, -1*delta_logp
 
-    def compute_loss(self, args, inputs, beta=1.):
+    def compute_avg_test_loss(self, args, r2_act, data, beta=1.):
+        _, c, h, w = data.shape
+        input_type = enn.FieldType(r2_act, self.c*[r2_act.trivial_repr])
+        bits_per_dim, logits_tensor = torch.zeros(1).to(data), torch.zeros(args.n_classes).to(data)
+        logpz, delta_logp = torch.zeros(1).to(data), torch.zeros(1).to(data)
+        logpx_list = []
+        data = enn.GeometricTensor(data.cpu(), self.input_type)
+        if args.dataset == 'celeba_5bit':
+            nvals = 32
+        elif args.dataset == 'celebahq':
+            nvals = 2**args.nbits
+        else:
+            nvals = 256
+
+        for g in r2_act.testing_elements:
+            x_transformed = data.transform(g).tensor.view(-1, c, h, w).cuda()
+            padded_inputs, logpu = add_padding(args, x_transformed, nvals)
+            _, logpz, delta_logp = self.log_prob(padded_inputs)
+
+            # log p(x)
+            logpx = logpz - beta * delta_logp - np.log(nvals) * (
+                args.imagesize * args.imagesize * (args.im_dim + args.padding)
+            ) - logpu
+            logpx_list.append(logpx)
+
+        logpx_total = torch.vstack(logpx_list)
+        bits_per_dim = -torch.mean(logpx_total) / (args.imagesize *
+                                             args.imagesize * args.im_dim) / np.log(2)
+
+        return bits_per_dim
+
+    def compute_loss(self, args, inputs, beta=1., do_test=False):
+        if do_test:
+            return self.compute_avg_test_loss(args, self.group_action_type, inputs)
         bits_per_dim, logits_tensor = torch.zeros(1).to(inputs), torch.zeros(args.n_classes).to(inputs)
         logpz, delta_logp = torch.zeros(1).to(inputs), torch.zeros(1).to(inputs)
         # z, _ = self.forward(inputs)
@@ -518,7 +606,8 @@ class EquivariantToyResFlow(nn.Module):
         # dims = [2] + list(map(int, args.dims.split('-'))) + [2]
         dims = [args.input_dim] + list(map(int, args.dims.split('-'))) + [args.input_dim]
         blocks = []
-        if self.args.actnorm: blocks.append(layers.EquivariantActNorm1d(2))
+        if self.args.actnorm:
+            blocks.append(layers.EquivariantActNorm1d(args.input_dim))
         for _ in range(n_blocks):
             blocks.append(
                 layers.Equivar_iResBlock(
@@ -532,8 +621,10 @@ class EquivariantToyResFlow(nn.Module):
                     grad_in_forward=True,
                 )
             )
-            if self.args.actnorm: blocks.append(layers.EquivariantActNorm1d(2))
-            if self.args.batchnorm: blocks.append(layers.MovingBatchNorm1d(2))
+            if self.args.actnorm:
+                blocks.append(layers.EquivariantActNorm1d(args.input_dim))
+            if self.args.batchnorm:
+                blocks.append(layers.MovingBatchNorm1d(args.input_dim))
         self.flow_model = layers.SequentialFlow(blocks)
 
     def build_nnet(self, dims, activation_fn=enn.ReLU):
@@ -549,6 +640,7 @@ class EquivariantToyResFlow(nn.Module):
         in_type = enn.FieldType(self.group_action_type, self.args.nc*[self.group_action_type.trivial_repr])
         out_dims = int(dims[1:][0] / self.group_card)
         out_type = enn.FieldType(self.group_action_type, out_dims*[self.group_action_type.regular_repr])
+        # out_type = enn.FieldType(self.group_action_type, out_dims*[self.group_action_type.irrep(0)])
         total_layers = len(domains)
         for i, (in_dim, out_dim, domain, codomain) in enumerate(zip(dims[:-1], dims[1:], domains, codomains)):
             nnet.append(
@@ -574,6 +666,7 @@ class EquivariantToyResFlow(nn.Module):
                 out_type = enn.FieldType(self.group_action_type, self.args.nc*[self.group_action_type.trivial_repr])
             else:
                 out_type = enn.FieldType(self.group_action_type, out_dim*[self.group_action_type.regular_repr])
+                # out_type = enn.FieldType(self.group_action_type, out_dim*[self.group_action_type.irrep(0)])
 
         return torch.nn.Sequential(*nnet)
 
@@ -635,8 +728,11 @@ class EquivariantToyResFlow(nn.Module):
         z, delta_logp = self.forward(inputs)
         # compute log p(z)
         if prior is None:
-            logpz = self.standard_normal_logprob(z).sum(1, keepdim=True)
+            logpz = standard_normal_logprob(z).view(z.size(0), -1).sum(1, keepdim=True)
+            # logpz = self.standard_normal_logprob(z).sum(1, keepdim=True)
         else:
+            # ipdb.set_trace()
+            # z = z.view(-1, inputs.shape[1])
             logpz = -1*prior.energy(z)
             # nll = (prior.energy(z).view(-1) + delta_logp.view(-1)).mean()
 

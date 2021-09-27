@@ -20,8 +20,9 @@ def create_dataset(arg_parse: argparse.Namespace, dataset_type: str, *args: Any,
         arg_parse.nc = 1
         return potential_fn(dataset_type)
     elif dataset_type == "dw4":
+        # ipdb.set_trace()
         dim = 8
-        arg_parse.input_dim = 2 #dim
+        # arg_parse.input_dim = 2 #dim
         n_particles = 4
         # arg_parse.nc = n_particles
 
@@ -37,16 +38,16 @@ def create_dataset(arg_parse: argparse.Namespace, dataset_type: str, *args: Any,
         idx = np.random.choice(len(data), len(data), replace=False)
         arg_parse.data = data
         arg_parse.idx = idx
-
+        n_batch = arg_parse.batch_size
         data_smaller = data[idx[:n_data]].clone()
-        # batch_iter = IndexBatchIterator(len(data_smaller), n_batch)
+        batch_iter = BatchIterator(len(data_smaller), n_batch)
         # return batch_iter
         if arg_parse.mean_free_prior:
             prior = MeanFreeNormalPrior(dim, n_particles)
         else:
             prior = None
-        batch_iter = BatchIterator(len(data), arg_parse.batch_size)
-        return data_smaller, data, batch_iter, prior
+        test_batch_iter = BatchIterator(len(data), arg_parse.batch_size)
+        return data_smaller, data, batch_iter, test_batch_iter, prior
     elif dataset_type == "mnist_rot":
         if arg_parse.double_padding:
             arg_parse.im_dim = 2

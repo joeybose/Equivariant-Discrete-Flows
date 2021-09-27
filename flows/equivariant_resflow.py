@@ -310,7 +310,7 @@ class EquivariantResidualFlow(nn.Module):
             avg_norm_diff = torch.norm(diff, p='fro', dim=-1).mean()
             print("Avg Norm Diff: %f | G: %d" %(avg_norm_diff, g))
             assert torch.allclose(torch.exp(output.squeeze()), torch.exp(output_rg.squeeze()), atol=1e-5), g
-        print("Passed Invariance Test")
+        print("Passed E-Resflow Invariance Test")
 
     def forward(self, x_in, logpx=None, inverse=False, classify=False):
         x = enn.GeometricTensor(x_in.view(-1, self.c, self.h, self.w), self.input_type)
@@ -432,9 +432,45 @@ class EquivariantResidualFlow(nn.Module):
 
         return logpx
 
-    def compute_loss(self, args, x, beta=1.0):
+    def compute_avg_test_loss(self, args, r2_act, data, beta=1.):
+        _, c, h, w = data.shape
+        input_type = enn.FieldType(r2_act, self.c*[r2_act.trivial_repr])
+        bits_per_dim, logits_tensor = torch.zeros(1).to(data), torch.zeros(args.n_classes).to(data)
+        logpz, delta_logp = torch.zeros(1).to(data), torch.zeros(1).to(data)
+        logpx_list = []
+        data = enn.GeometricTensor(data.cpu(), self.input_type)
+        if args.dataset == 'celeba_5bit':
+            nvals = 32
+        elif args.dataset == 'celebahq':
+            nvals = 2**args.nbits
+        else:
+            nvals = 256
+        for g in r2_act.testing_elements:
+            x_transformed = data.transform(g).tensor.view(-1, c, h, w).cuda()
+            padded_inputs, logpu = add_padding(args, x_transformed, nvals)
+            z, delta_logp = self.forward(padded_inputs.view(-1, *args.input_size[1:]), 0)
+            logpz = standard_normal_logprob(z).view(z.size(0), -1).sum(1, keepdim=True)
+
+            # log p(x)
+            logpx = logpz - beta * delta_logp - np.log(nvals) * (
+                args.imagesize * args.imagesize * (args.im_dim + args.padding)
+            ) - logpu
+            logpx_list.append(logpx)
+
+        logpx_total = torch.vstack(logpx_list)
+        bits_per_dim = -torch.mean(logpx_total) / (args.imagesize *
+                                             args.imagesize * args.im_dim) / np.log(2)
+        return bits_per_dim
+
+
+    def compute_loss(self, args, x, beta=1.0, do_test=False):
+        if do_test:
+            # ipdb.set_trace()
+            return self.compute_avg_test_loss(args, self.group_action_type, x)
+
         bits_per_dim, logits_tensor = torch.zeros(1).to(x), torch.zeros(args.n_classes).to(x)
         logpz, delta_logp = torch.zeros(1).to(x), torch.zeros(1).to(x)
+        # ipdb.set_trace()
         if args.dataset == 'celeba_5bit':
             nvals = 32
         elif args.dataset == 'celebahq':

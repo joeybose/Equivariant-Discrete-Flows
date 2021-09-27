@@ -18,14 +18,19 @@ ACT_FNS = {
     'lcube': base_layers.LipschitzCube,
 }
 
+def standard_normal_logprob(z):
+    logZ = -0.5 * math.log(2 * math.pi)
+    return logZ - z.pow(2) / 2
+
 class ToyResFlow(nn.Module):
     def __init__(self, args, n_blocks, input_size, hidden_size, n_hidden):
         super(ToyResFlow, self).__init__()
         self.args = args
         self.beta = args.beta
         self.n_blocks = n_blocks
+        self.input_size = input_size
         self.activation_fn = ACT_FNS[args.act]
-        dims = [2] + list(map(int, args.dims.split('-'))) + [2]
+        dims = [args.input_dim] + list(map(int, args.dims.split('-'))) + [args.input_dim]
         blocks = []
         if self.args.actnorm: blocks.append(layers.ActNorm1d(2))
         for _ in range(n_blocks):
@@ -41,8 +46,9 @@ class ToyResFlow(nn.Module):
                     grad_in_forward=True,
                 )
             )
-            if self.args.actnorm: blocks.append(layers.ActNorm1d(2))
-            if self.args.batchnorm: blocks.append(layers.MovingBatchNorm1d(2))
+            if self.args.actnorm: blocks.append(layers.ActNorm1d(args.input_dim))
+            if self.args.batchnorm:
+                blocks.append(layers.MovingBatchNorm1d(args.input_dim))
         self.flow_model = layers.SequentialFlow(blocks)
 
     def build_nnet(self, dims, activation_fn=torch.nn.ReLU):
@@ -123,10 +129,17 @@ class ToyResFlow(nn.Module):
         z, delta_logp = self.flow_model(x, zero)
         return z, delta_logp
 
-    def log_prob(self, inputs):
+    def log_prob(self, inputs, prior=None):
         z, delta_logp = self.forward(inputs)
         # compute log p(z)
-        logpz = self.standard_normal_logprob(z).sum(1, keepdim=True)
+        if prior is None:
+            logpz = standard_normal_logprob(z).view(z.size(0), -1).sum(1, keepdim=True)
+            # logpz = self.standard_normal_logprob(z).sum(1, keepdim=True)
+        else:
+            # ipdb.set_trace()
+            # z = z.view(-1, inputs.shape[1])
+            logpz = -1*prior.energy(z)
+            # nll = (prior.energy(z).view(-1) + delta_logp.view(-1)).mean()
 
         logpx = logpz - self.beta * delta_logp
         loss = -torch.mean(logpx)

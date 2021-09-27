@@ -434,21 +434,22 @@ def visualize_transform(
 ):
     """Produces visualization for the model density and samples from the model."""
     plt.clf()
-    ax = plt.subplot(1, 3, 1, aspect="equal")
-    if samples:
-        plt_samples(potential_or_samples, ax, npts=npts)
-    else:
-        plt_potential_func(potential_or_samples, ax, npts=npts)
+    # ax = plt.subplot(1, 3, 1, aspect="equal")
+    # if samples:
+        # plt_samples(potential_or_samples, ax, npts=npts)
+    # else:
+        # plt_potential_func(potential_or_samples, ax, npts=npts)
 
-    ax = plt.subplot(1, 3, 2, aspect="equal")
+    # ax = plt.subplot(1, 3, 2, aspect="equal")
+    ax = plt.subplot()
     if inverse_transform is None:
         plt_flow(prior_density, transform, ax, npts=npts, device=device)
     else:
         plt_flow_density(prior_density, inverse_transform, ax, npts=npts, memory=memory, device=device)
 
-    ax = plt.subplot(1, 3, 3, aspect="equal")
-    if transform is not None:
-        plt_flow_samples(prior_sample, transform, ax, npts=npts, memory=memory, device=device)
+    # ax = plt.subplot(1, 3, 3, aspect="equal")
+    # if transform is not None:
+        # plt_flow_samples(prior_sample, transform, ax, npts=npts, memory=memory, device=device)
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
@@ -688,17 +689,17 @@ def monitor_weight_norm(model):
     total_norm = total_norm ** (1. / 2)
     return total_norm
 
-def save_checkpoint(state, save, epoch, last_checkpoints=None, num_checkpoints=None):
-    if not os.path.exists(save):
-        os.makedirs(save)
-    filename = os.path.join(save, 'checkpt-%04d.pth' % epoch)
+def save_checkpoint(state, save, model_name, epoch, last_checkpoints=None, num_checkpoints=None):
+    if not os.path.exists(os.path.join(save, model_name)):
+        os.makedirs(os.path.join(save, model_name))
+    filename = os.path.join(save, model_name, 'checkpt-%04d.pth' % epoch)
     torch.save(state, filename)
 
     if last_checkpoints is not None and num_checkpoints is not None:
         last_checkpoints.append(epoch)
         if len(last_checkpoints) > num_checkpoints:
             rm_epoch = last_checkpoints.pop(0)
-            os.remove(os.path.join(save, 'checkpt-%04d.pth' % rm_epoch))
+            os.remove(os.path.join(save, model_name, 'checkpt-%04d.pth' % rm_epoch))
     return filename
 
 def load_checkpoint(args, resume_path, flow, optim):

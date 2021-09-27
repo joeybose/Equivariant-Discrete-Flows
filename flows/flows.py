@@ -17,6 +17,8 @@ from nflows.transforms.autoregressive import MaskedAffineAutoregressiveTransform
 from nflows.transforms.permutations import ReversePermutation
 from nflows.flows import realnvp
 
+from e2cnn import gspaces
+from e2cnn import nn as enn
 import flows.layers.base as base_layers
 import flows.layers as layers
 
@@ -29,6 +31,22 @@ ACTIVATION_FNS = {
     'maxmin': base_layers.MaxMin,
     'swish': base_layers.Swish,
     'lcube': base_layers.LipschitzCube,
+}
+
+GROUPS = {
+    'fliprot16': gspaces.FlipRot2dOnR2(N=16),
+    'fliprot12': gspaces.FlipRot2dOnR2(N=12),
+    'fliprot8': gspaces.FlipRot2dOnR2(N=8),
+    'fliprot4': gspaces.FlipRot2dOnR2(N=4),
+    'fliprot2': gspaces.FlipRot2dOnR2(N=2),
+    'flip': gspaces.Flip2dOnR2(),
+    'rot16': gspaces.Rot2dOnR2(N=16),
+    'rot12': gspaces.Rot2dOnR2(N=12),
+    'rot8': gspaces.Rot2dOnR2(N=8),
+    'rot4': gspaces.Rot2dOnR2(N=4),
+    'rot2': gspaces.Rot2dOnR2(N=2),
+    'so2': gspaces.Rot2dOnR2(N=-1, maximum_frequency=10),
+    'o2': gspaces.FlipRot2dOnR2(N=-1, maximum_frequency=10),
 }
 
 def standard_normal_logprob(z):
@@ -160,6 +178,11 @@ class RealNVP(nn.Module):
         _, self.c, self.h, self.w = input_size[:]
         # mask_size = self.c * self.h * self.w
         # mask = torch.arange(mask_size).float() % 2
+        self.group_action_type = GROUPS[args.group]
+        self.out_fiber = args.out_fiber
+        self.field_type = args.field_type
+        self.group_card = len(list(self.group_action_type.testing_elements))
+        self.input_type = enn.FieldType(self.group_action_type, self.c*[self.group_action_type.trivial_repr])
         self.n_blocks = int(n_blocks)
         self.n_hidden = n_hidden
         self.layer_type = layer_type
@@ -207,7 +230,40 @@ class RealNVP(nn.Module):
         # p_z = self.p_z([inputs.shape[-1]])
         # return p_z.log_prob(z) + logp
 
-    def compute_loss(self, args, inputs, beta=1.):
+    def compute_avg_test_loss(self, args, r2_act, data, beta=1.):
+        _, c, h, w = data.shape
+        input_type = enn.FieldType(r2_act, self.c*[r2_act.trivial_repr])
+        bits_per_dim, logits_tensor = torch.zeros(1).to(data), torch.zeros(args.n_classes).to(data)
+        logpz, delta_logp = torch.zeros(1).to(data), torch.zeros(1).to(data)
+        logpx_list = []
+        data = enn.GeometricTensor(data.cpu(), self.input_type)
+        if args.dataset == 'celeba_5bit':
+            nvals = 32
+        elif args.dataset == 'celebahq':
+            nvals = 2**args.nbits
+        else:
+            nvals = 256
+
+        for g in r2_act.testing_elements:
+            x_transformed = data.transform(g).tensor.view(-1, c, h, w).cuda()
+            padded_inputs, logpu = add_padding(args, x_transformed, nvals)
+            _, logpz, delta_logp = self.log_prob(padded_inputs)
+
+            # log p(x)
+            logpx = logpz - beta * delta_logp - np.log(nvals) * (
+                args.imagesize * args.imagesize * (args.im_dim + args.padding)
+            ) - logpu
+            logpx_list.append(logpx)
+
+        logpx_total = torch.vstack(logpx_list)
+        bits_per_dim = -torch.mean(logpx_total) / (args.imagesize *
+                                             args.imagesize * args.im_dim) / np.log(2)
+
+        return bits_per_dim
+
+    def compute_loss(self, args, inputs, beta=1., do_test=False):
+        if do_test:
+            return self.compute_avg_test_loss(args, self.group_action_type, inputs)
         bits_per_dim, logits_tensor = torch.zeros(1).to(inputs), torch.zeros(args.n_classes).to(inputs)
         logpz, delta_logp = torch.zeros(1).to(inputs), torch.zeros(1).to(inputs)
 

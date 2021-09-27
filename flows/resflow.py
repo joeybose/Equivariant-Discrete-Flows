@@ -5,6 +5,8 @@ import math
 import flows.layers.base as base_layers
 import flows.layers as layers
 import ipdb
+from e2cnn import gspaces
+from e2cnn import nn as enn
 
 ACT_FNS = {
     'softplus': lambda b: nn.Softplus(),
@@ -14,6 +16,23 @@ ACT_FNS = {
     'identity': lambda b: base_layers.Identity(),
     'relu': lambda b: nn.ReLU(inplace=b),
 }
+
+GROUPS = {
+    'fliprot16': gspaces.FlipRot2dOnR2(N=16),
+    'fliprot12': gspaces.FlipRot2dOnR2(N=12),
+    'fliprot8': gspaces.FlipRot2dOnR2(N=8),
+    'fliprot4': gspaces.FlipRot2dOnR2(N=4),
+    'fliprot2': gspaces.FlipRot2dOnR2(N=2),
+    'flip': gspaces.Flip2dOnR2(),
+    'rot16': gspaces.Rot2dOnR2(N=16),
+    'rot12': gspaces.Rot2dOnR2(N=12),
+    'rot8': gspaces.Rot2dOnR2(N=8),
+    'rot4': gspaces.Rot2dOnR2(N=4),
+    'rot2': gspaces.Rot2dOnR2(N=2),
+    'so2': gspaces.Rot2dOnR2(N=-1, maximum_frequency=10),
+    'o2': gspaces.FlipRot2dOnR2(N=-1, maximum_frequency=10),
+}
+
 
 def standard_normal_logprob(z):
     logZ = -0.5 * math.log(2 * math.pi)
@@ -78,6 +97,7 @@ class ResidualFlow(nn.Module):
     ):
         super(ResidualFlow, self).__init__()
         self.n_scale = min(len(n_blocks), self._calc_n_scale(input_size))
+        _, self.c, self.h, self.w = input_size[:]
         self.n_blocks = n_blocks
         self.intermediate_dim = intermediate_dim
         self.factor_out = factor_out
@@ -111,6 +131,11 @@ class ResidualFlow(nn.Module):
         self.n_classes = n_classes
         self.block_type = block_type
 
+        self.group_action_type = GROUPS[args.group]
+        self.out_fiber = args.out_fiber
+        self.field_type = args.field_type
+        self.group_card = len(list(self.group_action_type.testing_elements))
+        self.input_type = enn.FieldType(self.group_action_type, self.c*[self.group_action_type.trivial_repr])
         if not self.n_scale > 0:
             raise ValueError('Could not compute number of scales for input of' 'size (%d,%d,%d,%d)' % input_size)
 
@@ -290,13 +315,45 @@ class ResidualFlow(nn.Module):
         diff = x.view(batch_size, -1) - inv.view(batch_size, -1)
         avg_norm_diff = torch.norm(diff, p='fro', dim=-1).mean()
         print("Avg Diff is %f" %(avg_norm_diff))
-        ipdb.set_trace()
         for atol in atol_list:
             res = torch.allclose(x, inv, atol)
             print("Invertiblity at %f: %s" %(atol, str(res)))
         return avg_norm_diff
 
-    def compute_loss(self, args, x, beta=1.0):
+    def compute_avg_test_loss(self, args, r2_act, data, beta=1.):
+        _, c, h, w = data.shape
+        input_type = enn.FieldType(r2_act, self.c*[r2_act.trivial_repr])
+        bits_per_dim, logits_tensor = torch.zeros(1).to(data), torch.zeros(args.n_classes).to(data)
+        logpz, delta_logp = torch.zeros(1).to(data), torch.zeros(1).to(data)
+        logpx_list = []
+        data = enn.GeometricTensor(data.cpu(), self.input_type)
+        if args.dataset == 'celeba_5bit':
+            nvals = 32
+        elif args.dataset == 'celebahq':
+            nvals = 2**args.nbits
+        else:
+            nvals = 256
+        for g in r2_act.testing_elements:
+            x_transformed = data.transform(g).tensor.view(-1, c, h, w).cuda()
+            padded_inputs, logpu = add_padding(args, x_transformed, nvals)
+            z, delta_logp = self.forward(padded_inputs.view(-1, *args.input_size[1:]), 0)
+            logpz = standard_normal_logprob(z).view(z.size(0), -1).sum(1, keepdim=True)
+
+            # log p(x)
+            logpx = logpz - beta * delta_logp - np.log(nvals) * (
+                args.imagesize * args.imagesize * (args.im_dim + args.padding)
+            ) - logpu
+            logpx_list.append(logpx)
+
+        logpx_total = torch.vstack(logpx_list)
+        bits_per_dim = -torch.mean(logpx_total) / (args.imagesize *
+                                             args.imagesize * args.im_dim) / np.log(2)
+        return bits_per_dim
+
+    def compute_loss(self, args, x, beta=1.0, do_test=False):
+        if do_test:
+            # ipdb.set_trace()
+            return self.compute_avg_test_loss(args, self.group_action_type, x)
         bits_per_dim, logits_tensor = torch.zeros(1).to(x), torch.zeros(args.n_classes).to(x)
         logpz, delta_logp = torch.zeros(1).to(x), torch.zeros(1).to(x)
 

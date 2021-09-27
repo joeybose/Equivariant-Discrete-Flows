@@ -76,7 +76,8 @@ def sample_2d_data(dataset, n_samples):
         d1y =   torch.sin(n) * n + torch.rand(n_samples // 2) * 0.5
         x = torch.cat([torch.stack([ d1x,  d1y], dim=1),
                        torch.stack([-d1x, -d1y], dim=1)], dim=0) / 3
-        return x + 0.1*z
+        dataset = x + 0.1*z
+        return dataset.cpu().numpy()
 
     elif dataset == "pinwheel":
         radial_std = 0.3
@@ -96,7 +97,8 @@ def sample_2d_data(dataset, n_samples):
         rotations = np.reshape(rotations.T, (-1, 2, 2))
 
         data = 2 * rng.permutation(np.einsum("ti,tij->tj", features, rotations))
-        return torch.from_numpy(data)
+        # return torch.from_numpy(data)
+        return data
 
     elif dataset == 'checkerboard':
         x1 = torch.rand(n_samples) * 4 - 2
@@ -129,7 +131,8 @@ def sample_2d_data(dataset, n_samples):
         # random sample
         x = x[torch.randint(0, n_samples, size=(n_samples,))]
         # Add noise
-        return x + torch.normal(mean=torch.zeros_like(x), std=0.08*torch.ones_like(x))
+        dataset = x + torch.normal(mean=torch.zeros_like(x), std=0.08*torch.ones_like(x))
+        return dataset.cpu().numpy()
 
     elif dataset == 'swissroll':
         data = sklearn.datasets.make_swiss_roll(n_samples=n_samples, noise=1.0)[0]

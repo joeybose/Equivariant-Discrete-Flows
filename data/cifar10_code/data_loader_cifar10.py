@@ -87,6 +87,7 @@ def build_cifar10_loaders(batch_size,
 
     # define transforms
     valid_transform = transforms.Compose([
+        transforms.RandomRotation(degrees=90),
         transforms.ToTensor(),
         AddNoise,
         # normalize,
@@ -105,6 +106,7 @@ def build_cifar10_loaders(batch_size,
     else:
         train_transform = transforms.Compose([
             # transforms.RandomCrop(32, padding=4),
+            transforms.RandomRotation(degrees=90),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             AddNoise,

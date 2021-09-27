@@ -33,7 +33,7 @@ def create_flow(arg_parse: argparse.Namespace, model_type: str, *args: Any, **kw
     else:
         flow_model = kwargs_flows[model_type](
             arg_parse,
-            arg_parse.input_size,
+            input_size=arg_parse.input_size,
             n_blocks=list(map(int, arg_parse.n_blocks.split('-'))),
             intermediate_dim=arg_parse.idim,
             factor_out=arg_parse.factor_out,

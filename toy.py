@@ -37,7 +37,6 @@ def train_flow(args):
     delta_logp_meter = RunningAverageMeter(0.93)
     end = time.time()
 
-    ipdb.set_trace()
     if args.dataset is None:
         data, y = datasets.make_moons(128, noise=.1)
         # data = torch.tensor(data, dtype=torch.float32).to(args.dev)
@@ -63,7 +62,7 @@ def train_flow(args):
             # # data = torch.from_numpy(data).type(torch.float32).to(args.dev)
             # # data = torch.from_numpy(data, device=args.dev).type(torch.float32)
             # data = torch.tensor(data, dtype=torch.float32, device=args.dev)
-        optim.zero_grad()
+        optimizer.zero_grad()
         beta = min(1, itr / args.annealing_iters) if args.annealing_iters > 0 else 1.
         loss, logpz, delta_logp = flow.log_prob(inputs=data)
         try:
@@ -79,7 +78,7 @@ def train_flow(args):
 
         loss.backward()
         # grad_norm = torch.nn.utils.clip_grad.clip_grad_norm_(flow.parameters(), 1.)
-        optim.step()
+        optimizer.step()
         if 'resflow' in args.model_type:
             flow.beta = beta
             flow.update_lipschitz(args.n_lipschitz_iters)
@@ -125,7 +124,13 @@ def train_flow(args):
                     p_samples, torch.randn, flow.standard_normal_logprob, transform=sample_fn, inverse_transform=density_fn,
                     samples=True, npts=100, device=args.dev
                 )
-                plt.savefig('figures/E_figures/{}_{}.png'.format(args.plot_name, str(i+1)))
+                plot_dir = os.path.join(args.plot_dir, args.dataset,
+                                        args.model_type)
+                if not os.path.exists(plot_dir):
+                    os.makedirs(plot_dir)
+                plot_name = plot_dir + '/' + args.plot_name + '_' + str(i+1)
+                # plt.savefig('figures/E_figures/{}_{}.png'.format(args.plot_name, str(i+1)))
+                plt.savefig(plot_name)
                 plt.close()
                 flow.train()
 
@@ -141,6 +146,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # boiler plate inits
     parser.add_argument('--plot', action='store_true', help='Plot a flow and target density.')
+    parser.add_argument('--plot_dir', type=str, default='figures/Toy/')
     parser.add_argument('--cuda', type=int, help='Which GPU to run on.')
     parser.add_argument('--seed', type=int, default=0, help='Random seed.')
     parser.add_argument('--num_iters', type=int, default=500)
@@ -151,6 +157,7 @@ if __name__ == '__main__':
     parser.add_argument('--nsamples', type=int, default=500, help='Number of Samples to Use')
     # model parameters
     parser.add_argument('--input_size', type=int, default=2, help='Dimension of the data.')
+    parser.add_argument('--input_dim', type=int, default=2, help='Dimension of the data.')
     parser.add_argument('--hidden_dim', type=int, default=32, help='Dimensions of hidden layers.')
     parser.add_argument('--num_layers', type=int, default=1, help='Number of hidden layers.')
     parser.add_argument('--n_blocks', type=str, default='1')

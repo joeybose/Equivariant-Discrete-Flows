@@ -54,8 +54,8 @@ def do_train_epoch(args, epoch, flow_model, optim, train_loader, meters):
         #   maximize log p(x) = log p(z) - log |det df/dx|
 
         x = x.to(args.dev)
-        flow_model.check_invariant_log_prob(flow_model.group_action_type,
-                                            flow_model.input_type, x)
+        # flow_model.check_invariant_log_prob(flow_model.group_action_type,
+                                            # flow_model.input_type, x)
 
         # if 'resflow' in args.model_type:
             # flow_model.update_lipschitz(args.n_lipschitz_iters)
@@ -198,7 +198,7 @@ def validate(args, epoch, flow_model, test_loader, ema=None):
         lipschitz_constants.append(flow_model.get_lipschitz_constants())
         print('Valid Lipsch: {}'.format(utils.pretty_repr(lipschitz_constants[-1])))
 
-    avg_norm_diff = check_invertibility(args, epoch, flow_model, test_loader)
+    # avg_norm_diff = check_invertibility(args, epoch, flow_model, test_loader)
 
     # flow_model = utils.parallelize(flow_model)
     flow_model.eval()
@@ -210,7 +210,8 @@ def validate(args, epoch, flow_model, test_loader, ema=None):
     with torch.no_grad():
         for i, (x, y) in enumerate(tqdm(test_loader)):
             x = x.to(args.dev)
-            bpd, logits, _, _, _ = flow_model.compute_loss(args, x)
+            # bpd, logits, _, _, _ = flow_model.compute_loss(args, x)
+            bpd = flow_model.compute_loss(args, x, do_test=True)
             bpd_meter.update(bpd.item(), x.size(0))
 
             if args.task in ['classification', 'hybrid']:
@@ -224,9 +225,11 @@ def validate(args, epoch, flow_model, test_loader, ema=None):
 
     # if ema is not None:
         # ema.swap()
-    s = 'Epoch: [{0}]\tTime {1:.2f} | Test bits/dim {bpd_meter.avg:.4f}'.format(epoch, val_time, bpd_meter=bpd_meter)
+    s = 'Epoch: [{0}]\tTime {1:.2f} | Group Test bits/dim {bpd_meter.avg:.4f}'.format(epoch, val_time, bpd_meter=bpd_meter)
+    # if args.wandb:
+        # wandb.log({'Test BPD': bpd_meter.avg, 'Avg Norm Diff': avg_norm_diff})
     if args.wandb:
-        wandb.log({'Test BPD': bpd_meter.avg, 'Avg Norm Diff': avg_norm_diff})
+        wandb.log({'Test BPD': bpd_meter.avg})
 
     if args.task in ['classification', 'hybrid']:
         s += ' | CE {:.4f} | Acc {:.2f}'.format(ce_meter.avg, 100 * correct / total)
@@ -285,8 +288,10 @@ def train_flow(args, flow, optim, scheduler, train_loader, test_loader):
                                                  'optimizer_state_dict':
                                                  optim.state_dict(), 'args': args,
                                                  'test_bpd': torch.tensor([0]), },
-                                                os.path.join(args.save, 'models'), 0,
-                                                last_checkpoints, num_checkpoints=5)
+                                                os.path.join(args.save, 'models'),
+                                                args.model_type, epoch,
+                                                last_checkpoints,
+                                                num_checkpoints=5)
         # if args.scheduler and scheduler is not None:
             # scheduler.step()
 

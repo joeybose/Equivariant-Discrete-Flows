@@ -2,6 +2,7 @@ import numpy as np
 from PIL import Image
 import torch
 import torch.utils.data as data
+import torch.nn.functional as F
 import os.path
 from torchvision import transforms
 import ipdb
@@ -9,11 +10,15 @@ from . import own_transforms
 
 ROOT = "./data/mnist12k_data/"
 
+def get_rot_mat(theta):
+    theta = torch.tensor(theta)
+    return torch.tensor([[torch.cos(theta), -torch.sin(theta), 0],
+                         [torch.sin(theta), torch.cos(theta), 0]])
 
 class mnist_dataset(data.Dataset):
     """ flip-rotated MNIST dataset """
 
-    def __init__(self, mode, transform=None, target_transform=None, reshuffle_seed=None):
+    def __init__(self, mode, apply_rot=False, transform=None, target_transform=None, reshuffle_seed=None):
         """
         :type  mode: string from ['train', 'valid', 'test']
         :param mode: determines which subset of the dataset is loaded and whether augmentation is used
@@ -30,6 +35,7 @@ class mnist_dataset(data.Dataset):
         self.mode = mode
         self.transform = transform
         self.target_transform = target_transform
+        self.apply_rot = apply_rot
 
         # load the numpy arrays
         if mode in ["train", "valid", "trainval"]:
@@ -81,6 +87,13 @@ class mnist_dataset(data.Dataset):
             image = self.transform(image)
         if self.target_transform is not None:
             label = self.target_transform(label)
+
+        if self.apply_rot:
+            theta = np.random.randint(low=0, high=3, size=1).squeeze()*np.pi/2
+            rot_mat = get_rot_mat(theta)[None, ...].repeat(image.shape[0],1,1)
+            image = image.unsqueeze(0)
+            grid = F.affine_grid(rot_mat, image.size()).float()
+            image = F.grid_sample(image, grid).view(1, 28, 28)
         return image, label
 
     def __len__(self):
@@ -88,7 +101,7 @@ class mnist_dataset(data.Dataset):
 
 
 def build_mnist12k_loader(mode, args, batch_size, num_workers=8, rot_interpol_augmentation=False, interpolation=0,
-                          reshuffle_seed=None, coords=False):
+                          reshuffle_seed=None, coords=False, apply_rot=True):
     """  """
     rng = np.random.RandomState(42)
 
@@ -122,7 +135,8 @@ def build_mnist12k_loader(mode, args, batch_size, num_workers=8, rot_interpol_au
 
     transform = own_transforms.Compose(transform)
 
-    dataset = mnist_dataset(mode, transform=transform, reshuffle_seed=reshuffle_seed)
+    dataset = mnist_dataset(mode, transform=transform,
+                            reshuffle_seed=reshuffle_seed, apply_rot=apply_rot)
     loader = torch.utils.data.DataLoader(
         dataset,
         batch_size=batch_size,

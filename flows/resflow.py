@@ -351,7 +351,7 @@ class ResidualFlow(nn.Module):
         return bits_per_dim
 
     def compute_loss(self, args, x, beta=1.0, do_test=False):
-        if do_test:
+        if do_test and not args.task == 'hybrid':
             # ipdb.set_trace()
             return self.compute_avg_test_loss(args, self.group_action_type, x)
         bits_per_dim, logits_tensor = torch.zeros(1).to(x), torch.zeros(args.n_classes).to(x)
@@ -390,6 +390,7 @@ class ResidualFlow(nn.Module):
 
             logpz = torch.mean(logpz).detach()
             delta_logp = torch.mean(-delta_logp).detach()
+
         return bits_per_dim, logits_tensor, logpz, delta_logp, z
 
     def update_lipschitz(self, n_iterations):

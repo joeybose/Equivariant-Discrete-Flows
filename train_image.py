@@ -101,7 +101,7 @@ def do_train_epoch(args, epoch, flow_model, optim, train_loader, meters):
             elif args.task == 'classification':
                 loss = crossent
             else:
-                if not args.scale_dim: bpd = bpd * (args.imagesize * args.imagesize * im_dim)
+                if not args.scale_dim: bpd = bpd * (args.imagesize * args.imagesize * args.im_dim)
                 loss = bpd + crossent / np.log(2)  # Change cross entropy from nats to bits.
 
         if do_update:
@@ -211,7 +211,10 @@ def validate(args, epoch, flow_model, test_loader, ema=None):
         for i, (x, y) in enumerate(tqdm(test_loader)):
             x = x.to(args.dev)
             # bpd, logits, _, _, _ = flow_model.compute_loss(args, x)
-            bpd = flow_model.compute_loss(args, x, do_test=True)
+            if args.task == 'density':
+                bpd = flow_model.compute_loss(args, x, do_test=True)
+            else:
+                bpd, logits, _, _, _ = flow_model.compute_loss(args, x)
             bpd_meter.update(bpd.item(), x.size(0))
 
             if args.task in ['classification', 'hybrid']:

@@ -10,6 +10,8 @@ from utils import utils
 import flows.layers.base as base_layers
 import flows.layers as layers
 from flows.flow_utils import *
+from torch.distributions.multivariate_normal import MultivariateNormal
+from flows.distributions import HypersphericalUniform
 import ipdb
 
 ACT_FNS = {
@@ -156,6 +158,10 @@ class EquivariantResidualFlow(nn.Module):
         self.dims = [o[1:] for o in self.calc_output_size(input_size)]
         self.uniform_prior = BoxUniform(torch.tensor([0.0]).to(args.dev),
                                         torch.tensor([1.0]).to(args.dev))
+        # self.prior = MultivariateNormal(torch.zeros(2).cuda(),
+                                        # torch.eye(2).cuda())
+        self.prior = HypersphericalUniform(dim=self.c*self.h*self.w,
+                                           device=args.dev)
 
         if self.classification:
             self.build_multiscale_classifier(input_size)
@@ -451,7 +457,8 @@ class EquivariantResidualFlow(nn.Module):
             x_transformed = data.transform(g).tensor.view(-1, c, h, w).cuda()
             padded_inputs, logpu = add_padding(args, x_transformed, nvals)
             z, delta_logp = self.forward(padded_inputs.view(-1, *args.input_size[1:]), 0)
-            logpz = standard_normal_logprob(z).view(z.size(0), -1).sum(1, keepdim=True)
+            logpz = self.prior.log_prob(z).view(z.size(0), -1).sum(1, keepdim=True)
+            # logpz = standard_normal_logprob(z).view(z.size(0), -1).sum(1, keepdim=True)
 
             # log p(x)
             logpx = logpz - beta * delta_logp - np.log(nvals) * (
@@ -495,10 +502,11 @@ class EquivariantResidualFlow(nn.Module):
 
         if args.task in ['density', 'hybrid']:
             # log p(z)
-            ipdb.set_trace()
-            z = torch.clip(z, -1e-8, 1. + 1e-8)
-            logpz = self.uniform_prior.log_prob(z).sum(1, keepdim=True)
-            # logpz = standard_normal_logprob(z).view(z.size(0), -1).sum(1, keepdim=True)
+            # z = torch.clip(z, -1e-8, 1. + 1e-8)
+            # logpz = self.uniform_prior.log_prob(z).sum(1, keepdim=True)
+            # ipdb.set_trace()
+            # logpz = self.prior.log_prob(z).view(z.size(0), -1).sum(1, keepdim=True)
+            logpz = standard_normal_logprob(z).view(z.size(0), -1).sum(1, keepdim=True)
 
             # log p(x)
             logpx = logpz - beta * delta_logp - np.log(nvals) * (

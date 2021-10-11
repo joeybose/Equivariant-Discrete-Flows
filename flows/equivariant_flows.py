@@ -20,6 +20,8 @@ from e2cnn import nn as enn
 from flows.flow_helpers import *
 import flows.layers.base as base_layers
 import flows.layers as layers
+from torch.distributions.multivariate_normal import MultivariateNormal
+from flows.distributions import HypersphericalUniform
 
 ACT_FNS = {
     'relu': enn.ReLU,
@@ -626,6 +628,8 @@ class EquivariantToyResFlow(nn.Module):
             if self.args.batchnorm:
                 blocks.append(layers.MovingBatchNorm1d(args.input_dim))
         self.flow_model = layers.SequentialFlow(blocks)
+        self.prior = MultivariateNormal(torch.zeros(2).cuda(),
+                                        torch.eye(2).cuda())
 
     def build_nnet(self, dims, activation_fn=enn.ReLU):
         nnet = []
@@ -729,7 +733,7 @@ class EquivariantToyResFlow(nn.Module):
         # compute log p(z)
         if prior is None:
             logpz = standard_normal_logprob(z).view(z.size(0), -1).sum(1, keepdim=True)
-            # logpz = self.standard_normal_logprob(z).sum(1, keepdim=True)
+            # logpz = self.prior.log_prob(z).view(z.size(0), -1).sum(1, keepdim=True)
         else:
             # ipdb.set_trace()
             # z = z.view(-1, inputs.shape[1])

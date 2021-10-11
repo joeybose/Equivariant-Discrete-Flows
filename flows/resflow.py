@@ -7,6 +7,7 @@ import flows.layers as layers
 import ipdb
 from e2cnn import gspaces
 from e2cnn import nn as enn
+from flows.distributions import HypersphericalUniform
 
 ACT_FNS = {
     'softplus': lambda b: nn.Softplus(),
@@ -136,6 +137,8 @@ class ResidualFlow(nn.Module):
         self.field_type = args.field_type
         self.group_card = len(list(self.group_action_type.testing_elements))
         self.input_type = enn.FieldType(self.group_action_type, self.c*[self.group_action_type.trivial_repr])
+        self.prior = HypersphericalUniform(dim=self.c*self.h*self.w,
+                                           device=args.dev)
         if not self.n_scale > 0:
             raise ValueError('Could not compute number of scales for input of' 'size (%d,%d,%d,%d)' % input_size)
 
@@ -337,7 +340,8 @@ class ResidualFlow(nn.Module):
             x_transformed = data.transform(g).tensor.view(-1, c, h, w).cuda()
             padded_inputs, logpu = add_padding(args, x_transformed, nvals)
             z, delta_logp = self.forward(padded_inputs.view(-1, *args.input_size[1:]), 0)
-            logpz = standard_normal_logprob(z).view(z.size(0), -1).sum(1, keepdim=True)
+            logpz = self.prior.log_prob(z).view(z.size(0), -1).sum(1, keepdim=True)
+            # logpz = standard_normal_logprob(z).view(z.size(0), -1).sum(1, keepdim=True)
 
             # log p(x)
             logpx = logpz - beta * delta_logp - np.log(nvals) * (
@@ -379,7 +383,8 @@ class ResidualFlow(nn.Module):
 
         if args.task in ['density', 'hybrid']:
             # log p(z)
-            logpz = standard_normal_logprob(z).view(z.size(0), -1).sum(1, keepdim=True)
+            logpz = self.prior.log_prob(z).view(z.size(0), -1).sum(1, keepdim=True)
+            # logpz = standard_normal_logprob(z).view(z.size(0), -1).sum(1, keepdim=True)
 
             # log p(x)
             logpx = logpz - beta * delta_logp - np.log(nvals) * (

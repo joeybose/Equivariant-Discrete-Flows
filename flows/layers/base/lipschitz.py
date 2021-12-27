@@ -5,16 +5,21 @@ import torch.nn.init as init
 import torch.nn.functional as F
 
 from .utils import _pair
-from .mixed_lipschitz import InducedNormLinear, InducedNormConv2d, InducedNormEquivarConv2d
+from .mixed_lipschitz import InducedNormLinear, InducedNormConv2d, InducedNormEquivarConv2d, InducedNormLieConv2d
 from .r2_conv import MyR2Conv
 from .spectral_norm import SpectralNorm
 from .spectral import spectral_norm_conv
 from e2cnn import gspaces
 from e2cnn import nn as enn
+from lie_conv.utils import Expression,export,Named, Pass
+from lie_conv.utils import FarthestSubsample, knn_point, index_points
+from lie_conv.lieGroups import T,SO2,SO3,SE2,SE3, norm
+from lie_conv.masked_batchnorm import MaskBatchNormNd
 import ipdb
 
 __all__ = ['SpectralNormLinear', 'SpectralNormConv2d', 'LopLinear',
-           'LopConv2d', 'get_linear', 'get_conv2d', 'get_equivar_conv2d',
+           'LopConv2d', 'get_linear', 'get_conv2d',
+           'get_equivar_conv2d','get_lie_conv2d',
            'MyR2Conv']
 
 
@@ -537,6 +542,14 @@ def get_conv2d(
         if domain in [2, float('inf')]:
             _conv2d = LopConv2d
     return _conv2d(in_channels, out_channels, kernel_size, stride, padding, bias, coeff, domain, codomain, **kwargs)
+
+def get_lie_conv2d( in_channels, out_channels, nbhd, ds_frac, bn, act, mean,
+                   group, fill=0.1, cache=False, knn=False, **kwargs):
+    _conv2d = InducedNormLieConv2d
+    equivar_conv = _conv2d(in_channels, out_channels, mc_samples=nbhd, ds_frac=ds_frac,
+                   bn=True, act=act, mean=mean,
+                   group=group,fill=fill,cache=cache,knn=knn)
+    return equivar_conv
 
 def get_equivar_conv2d(
     in_type, out_type, group_action_type, kernel_size, stride, padding, bias=True, coeff=0.97, domain=None, codomain=None, **kwargs

@@ -174,6 +174,166 @@ class iResBlock(nn.Module):
         )
 
 
+class Lie_iResBlock(nn.Module):
+
+    def __init__(
+        self,
+        nnet,
+        geom_p=0.5,
+        lamb=2.,
+        n_power_series=None,
+        exact_trace=False,
+        brute_force=False,
+        n_samples=1,
+        n_exact_terms=2,
+        n_dist='geometric',
+        neumann_grad=True,
+        grad_in_forward=False,
+    ):
+        """
+        Args:
+            nnet: a nn.Module
+            n_power_series: number of power series. If not None, uses a biased approximation to logdet.
+            exact_trace: if False, uses a Hutchinson trace estimator. Otherwise computes the exact full Jacobian.
+            brute_force: Computes the exact logdet. Only available for 2D inputs.
+        """
+        nn.Module.__init__(self)
+        self.nnet = nnet
+        self.n_dist = n_dist
+        self.geom_p = nn.Parameter(torch.tensor(np.log(geom_p) - np.log(1. - geom_p)))
+        self.lamb = nn.Parameter(torch.tensor(lamb))
+        self.n_samples = n_samples
+        self.n_power_series = n_power_series
+        self.exact_trace = exact_trace
+        self.brute_force = brute_force
+        self.n_exact_terms = n_exact_terms
+        self.grad_in_forward = grad_in_forward
+        self.neumann_grad = neumann_grad
+
+        # store the samples of n.
+        self.register_buffer('last_n_samples', torch.zeros(self.n_samples))
+        self.register_buffer('last_firmom', torch.zeros(1))
+        self.register_buffer('last_secmom', torch.zeros(1))
+
+    def forward(self, x, logpx=None):
+        if logpx is None:
+            y = x + self.nnet(x)
+            return y
+        else:
+            if not torch.is_tensor(x):
+                x = x.tensor
+            g, logdetgrad = self._logdetgrad(x)
+            return x + g, logpx - logdetgrad
+
+    def inverse(self, y, logpy=None):
+        x = self._inverse_fixed_point(y)
+        if logpy is None:
+            return x
+        else:
+            return x, logpy + self._logdetgrad(x)[1]
+
+    def _inverse_fixed_point(self, y, atol=1e-5, rtol=1e-5):
+        x, x_prev = y - self.nnet(y), y
+        i = 0
+        tol = atol + y.abs() * rtol
+        while not torch.all((x - x_prev)**2 / tol < 1):
+            x, x_prev = y - self.nnet(x), x
+            i += 1
+            if i > 1000:
+                logger.info('Iterations exceeded 1000 for inverse.')
+                break
+        return x
+
+    def _logdetgrad(self, x):
+        """Returns g(x) and logdet|d(x+g(x))/dx|."""
+
+        with torch.enable_grad():
+            if (self.brute_force or not self.training) and (x.ndimension() == 2 and x.shape[1] == 2):
+                ###########################################
+                # Brute-force compute Jacobian determinant.
+                ###########################################
+                x = x.requires_grad_(True)
+                g = self.nnet(x)
+                # Brute-force logdet only available for 2D.
+                jac = batch_jacobian(g, x)
+                batch_dets = (jac[:, 0, 0] + 1) * (jac[:, 1, 1] + 1) - jac[:, 0, 1] * jac[:, 1, 0]
+                return g, torch.log(torch.abs(batch_dets)).view(-1, 1)
+
+            if self.n_dist == 'geometric':
+                geom_p = torch.sigmoid(self.geom_p).item()
+                sample_fn = lambda m: geometric_sample(geom_p, m)
+                rcdf_fn = lambda k, offset: geometric_1mcdf(geom_p, k, offset)
+            elif self.n_dist == 'poisson':
+                lamb = self.lamb.item()
+                sample_fn = lambda m: poisson_sample(lamb, m)
+                rcdf_fn = lambda k, offset: poisson_1mcdf(lamb, k, offset)
+
+            if self.training:
+                if self.n_power_series is None:
+                    # Unbiased estimation.
+                    lamb = self.lamb.item()
+                    n_samples = sample_fn(self.n_samples)
+                    n_power_series = max(n_samples) + self.n_exact_terms
+                    coeff_fn = lambda k: 1 / rcdf_fn(k, self.n_exact_terms) * \
+                        sum(n_samples >= k - self.n_exact_terms) / len(n_samples)
+                else:
+                    # Truncated estimation.
+                    n_power_series = self.n_power_series
+                    coeff_fn = lambda k: 1.
+            else:
+                # Unbiased estimation with more exact terms.
+                lamb = self.lamb.item()
+                n_samples = sample_fn(self.n_samples)
+                n_power_series = max(n_samples) + 20
+                coeff_fn = lambda k: 1 / rcdf_fn(k, 20) * \
+                    sum(n_samples >= k - 20) / len(n_samples)
+
+            if not self.exact_trace:
+                ####################################
+                # Power series with trace estimator.
+                ####################################
+                vareps = torch.randn_like(x)
+
+                # Choose the type of estimator.
+                if self.training and self.neumann_grad:
+                    estimator_fn = neumann_logdet_estimator
+                else:
+                    estimator_fn = basic_logdet_estimator
+
+                # Do backprop-in-forward to save memory.
+                if self.training and self.grad_in_forward:
+                    g, logdetgrad = mem_eff_wrapper(
+                        estimator_fn, self.nnet, x, n_power_series, vareps, coeff_fn, self.training
+                    )
+                else:
+                    x = x.requires_grad_(True)
+                    g = self.nnet(x)
+                    logdetgrad = estimator_fn(g, x, n_power_series, vareps, coeff_fn, self.training)
+            else:
+                ############################################
+                # Power series with exact trace computation.
+                ############################################
+                x = x.requires_grad_(True)
+                g = self.nnet(x)
+                ipdb.set_trace()
+                jac = batch_jacobian(g, x)
+                logdetgrad = batch_trace(jac)
+                jac_k = jac
+                for k in range(2, n_power_series + 1):
+                    jac_k = torch.bmm(jac, jac_k)
+                    logdetgrad = logdetgrad + (-1)**(k + 1) / k * coeff_fn(k) * batch_trace(jac_k)
+
+            if self.training and self.n_power_series is None:
+                self.last_n_samples.copy_(torch.tensor(n_samples).to(self.last_n_samples))
+                estimator = logdetgrad.detach()
+                self.last_firmom.copy_(torch.mean(estimator).to(self.last_firmom))
+                self.last_secmom.copy_(torch.mean(estimator**2).to(self.last_secmom))
+            return g, logdetgrad.view(-1, 1)
+
+    def extra_repr(self):
+        return 'dist={}, n_samples={}, n_power_series={}, neumann_grad={}, exact_trace={}, brute_force={}'.format(
+            self.n_dist, self.n_samples, self.n_power_series, self.neumann_grad, self.exact_trace, self.brute_force
+        )
 
 class Equivar_iResBlock(nn.Module):
 

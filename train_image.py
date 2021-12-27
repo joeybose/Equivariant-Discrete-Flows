@@ -61,6 +61,7 @@ def do_train_epoch(args, epoch, flow_model, optim, train_loader, meters):
             # flow_model.update_lipschitz(args.n_lipschitz_iters)
 
         beta = beta = min(1, global_itr / args.annealing_iters) if args.annealing_iters > 0 else 1.
+        ipdb.set_trace()
         bpd, logits, logpz, neg_delta_logp, z = flow_model.compute_loss(args, x, beta=beta)
 
         if bpd < 0:
@@ -317,6 +318,9 @@ def main(args):
         # args.init_layer = layers.EquivariantLogitTransform(args.logit_init)
         args.init_layer = None
         args.squeeze_layer = layers.EquivariantSqueezeLayer(2)
+    elif args.model_type == 'lie_resflow':
+        args.init_layer = None
+        args.squeeze_layer = layers.SqueezeLayer(2)
     else:
         args.init_layer = layers.LogitTransform(args.logit_init)
         args.squeeze_layer = layers.SqueezeLayer(2)

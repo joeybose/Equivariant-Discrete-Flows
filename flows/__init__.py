@@ -4,6 +4,7 @@ from .equivariant_flows import *
 from .toy_resflow import *
 from .resflow import *
 from .equivariant_resflow import *
+from .lie_resflow import *
 from .mixed_equivariant_resflow import *
 from .invariant_maps import *
 import argparse
@@ -14,8 +15,8 @@ kwargs_flows = {'MAFRealNVP': MAFRealNVP, 'RealNVP': RealNVP, "Toy": toy_flow,
                 ResidualFlow, "E_realnvp": EquivariantRealNVP, "FiberRealNVP":
                 FiberRealNVP, "E_toy_resflow": EquivariantToyResFlow,
                 "resflow": ResidualFlow, "E_resflow": EquivariantResidualFlow,
-                "Mixed_resflow": MixedResidualFlow,
-                "E_convexp": EquivariantConvExp}
+                "Mixed_resflow": MixedResidualFlow, "lie_resflow":
+                LieResidualFlow, "E_convexp": EquivariantConvExp}
 
 def create_flow(arg_parse: argparse.Namespace, model_type: str, *args: Any, **kwargs: Any):
     if arg_parse.dataset in ["8gaussians", "2spirals", "checkerboard", "rings",

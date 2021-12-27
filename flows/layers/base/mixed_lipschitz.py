@@ -6,11 +6,13 @@ import torch.nn as nn
 import torch.nn.init as init
 import torch.nn.functional as F
 from .utils import check_equivariance
+from lie_conv.lieConv import LieConv, InducedNormLieConv
 from e2cnn import gspaces
 from e2cnn import nn as enn
 import ipdb
 
-__all__ = ['InducedNormLinear', 'InducedNormConv2d', 'InducedNormEquivarConv2d']
+__all__ = ['InducedNormLinear', 'InducedNormConv2d',
+           'InducedNormEquivarConv2d', 'InducedNormLieConv2d']
 
 
 class InducedNormLinear(nn.Module):
@@ -401,6 +403,56 @@ class InducedNormConv2d(nn.Module):
         )
         return s.format(**self.__dict__)
 
+
+class InducedNormLieConv2d(nn.Module):
+
+    def __init__(
+        self, in_channels, out_channels, mc_samples, ds_frac, bn, act, mean,
+            group, fill, cache, knn, coeff=0.97, domain=2, codomain=2,
+        n_iterations=None, atol=None, rtol=None, **unused_kwargs
+    ):
+        del unused_kwargs
+        super(InducedNormLieConv2d, self).__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.mc_samples = mc_samples
+        self.ds_frac = ds_frac
+        self.bn = bn
+        self.act = act
+        self.mean = mean
+        self.group = group
+        self.coeff = coeff
+        self.n_iterations = n_iterations
+        self.domain = domain
+        self.codomain = codomain
+        self.atol = atol
+        self.rtol = rtol
+        self.net = InducedNormLieConv(in_channels, out_channels, mc_samples=mc_samples,
+                          ds_frac=ds_frac, bn=True, act=act, mean=mean,
+                          group=group,fill=fill,cache=cache,knn=knn)
+
+    def compute_domain_codomain(self):
+        if torch.is_tensor(self.domain):
+            domain = asym_squash(self.domain)
+            codomain = asym_squash(self.codomain)
+        else:
+            domain, codomain = self.domain, self.codomain
+        return domain, codomain
+
+    def forward(self, input):
+        return self.net(input)
+
+    def extra_repr(self):
+        domain, codomain = self.compute_domain_codomain()
+        s = ('{in_channels}, {out_channels}, kernel_size={kernel_size}' ', stride={stride}')
+        if self.padding != (0,) * len(self.padding):
+            s += ', padding={padding}'
+        if self.bias is None:
+            s += ', bias=False'
+        s += ', coeff={}, domain={:.2f}, codomain={:.2f}, n_iters={}, atol={}, rtol={}, learnable_ord={}'.format(
+            self.coeff, domain, codomain, self.n_iterations, self.atol, self.rtol, torch.is_tensor(self.domain)
+        )
+        return s.format(**self.__dict__)
 
 class InducedNormEquivarConv2d(nn.Module):
 

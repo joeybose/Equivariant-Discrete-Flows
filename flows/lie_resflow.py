@@ -4,9 +4,9 @@ import torch.nn as nn
 import math
 import flows.layers.base as base_layers
 import flows.layers as layers
+import numpy as np
+from flows.layers.base.lie_conv.lieGroups import T,SO2,SO3,SE2,SE3, norm
 import ipdb
-from e2cnn import gspaces
-from e2cnn import nn as enn
 from flows.distributions import HypersphericalUniform
 
 ACT_FNS = {
@@ -19,19 +19,11 @@ ACT_FNS = {
 }
 
 GROUPS = {
-    'fliprot16': gspaces.FlipRot2dOnR2(N=16),
-    'fliprot12': gspaces.FlipRot2dOnR2(N=12),
-    'fliprot8': gspaces.FlipRot2dOnR2(N=8),
-    'fliprot4': gspaces.FlipRot2dOnR2(N=4),
-    'fliprot2': gspaces.FlipRot2dOnR2(N=2),
-    'flip': gspaces.Flip2dOnR2(),
-    'rot16': gspaces.Rot2dOnR2(N=16),
-    'rot12': gspaces.Rot2dOnR2(N=12),
-    'rot8': gspaces.Rot2dOnR2(N=8),
-    'rot4': gspaces.Rot2dOnR2(N=4),
-    'rot2': gspaces.Rot2dOnR2(N=2),
-    'so2': gspaces.Rot2dOnR2(N=-1, maximum_frequency=10),
-    'o2': gspaces.FlipRot2dOnR2(N=-1, maximum_frequency=10),
+    'so2': SO2,
+    'so3': SO3,
+    'se2': SE2,
+    'se3': SE3,
+    't': T,
 }
 
 
@@ -57,7 +49,7 @@ def add_padding(args, x, nvals=256):
         return x, torch.zeros(x.shape[0], 1).to(x)
 
 
-class ResidualFlow(nn.Module):
+class LieResidualFlow(nn.Module):
 
     def __init__(
         self,
@@ -96,7 +88,7 @@ class ResidualFlow(nn.Module):
         n_classes=10,
         block_type='resblock',
     ):
-        super(ResidualFlow, self).__init__()
+        super(LieResidualFlow, self).__init__()
         self.n_scale = min(len(n_blocks), self._calc_n_scale(input_size))
         _, self.c, self.h, self.w = input_size[:]
         self.n_blocks = n_blocks
@@ -132,11 +124,13 @@ class ResidualFlow(nn.Module):
         self.n_classes = n_classes
         self.block_type = block_type
 
-        self.group_action_type = GROUPS[args.group]
-        self.out_fiber = args.out_fiber
-        self.field_type = args.field_type
-        self.group_card = len(list(self.group_action_type.testing_elements))
-        self.input_type = enn.FieldType(self.group_action_type, self.c*[self.group_action_type.trivial_repr])
+        self.group = GROUPS[args.group]()
+        self.nbhd = 25
+        self.ds_frac = 1
+        self.fill = 0.1
+        self.bn = True
+        self.mean = True
+        self.liftsamples = 1
         self.prior = HypersphericalUniform(dim=self.c*self.h*self.w,
                                            device=args.dev)
         if not self.n_scale > 0:
@@ -156,6 +150,7 @@ class ResidualFlow(nn.Module):
         for i in range(self.n_scale):
             transforms.append(
                 _stacked_blocks(
+                    self.group,
                     initial_size=(c, h, w),
                     idim=self.intermediate_dim,
                     squeeze=(i < self.n_scale - 1),  # don't squeeze last layer
@@ -185,6 +180,11 @@ class ResidualFlow(nn.Module):
                     grad_in_forward=self.grad_in_forward,
                     first_resblock=self.first_resblock and (i == 0),
                     learn_p=self.learn_p,
+                    nbhd=self.nbhd,
+                    ds_frac=self.ds_frac,
+                    fill=self.fill,
+                    bn=self.bn,
+                    mean=self.mean,
                 )
             )
             c, h, w = c * 2 if self.factor_out else c * 4, h // 2, w // 2
@@ -238,19 +238,42 @@ class ResidualFlow(nn.Module):
         self.classification_heads = nn.ModuleList(classification_heads)
         self.logit_layer = nn.Linear(self.classification_hdim * len(classification_heads), self.n_classes)
 
-    def forward(self, x, logpx=None, inverse=False, classify=False):
+    def forward(self, x, logpx=None, inverse=False, classify=False,
+                coord_transform=None):
+
+        """ assumes x is a regular image: (bs,c,h,w)"""
+        ipdb.set_trace()
+        bs,c,h,w = x.shape
+        # Construct coordinate grid
+        i = torch.linspace(-h/2.,h/2.,h)
+        j = torch.linspace(-w/2.,w/2.,w)
+        coords = torch.stack(torch.meshgrid([i,j]),dim=-1).float()
+        # Perform center crop
+        # center_mask = coords.norm(dim=-1)<15. # crop out corners (filled only with zeros)
+        center_mask = coords.norm(dim=-1)<100. # crop out corners (filled only with zeros)
+        coords = coords[center_mask].view(-1,2).unsqueeze(0).repeat(bs,1,1).to(x.device)
+        if coord_transform is not None: coords = coord_transform(coords)
+        values = x.permute(0,2,3,1)[:,center_mask,:].reshape(bs,-1,c)
+        mask = torch.ones(bs,values.shape[1],device=x.device)>0 # all true
+        z = (coords,values,mask)
+        # Perform lifting of the coordinates and cache results
+        with torch.no_grad():
+            lifted_coords,lifted_vals,lifted_mask = self.group.lift(z, self.liftsamples)
+
+        tuple_x =  (lifted_coords,lifted_vals,lifted_mask)
         if inverse:
-            return self.inverse(x, logpx)
+            return self.inverse(tuple_x, logpx)
+
         out = []
         if classify: class_outs = []
         for idx in range(len(self.transforms)):
             if logpx is not None:
-                x, logpx = self.transforms[idx].forward(x, logpx)
+                tuple_x, logpx = self.transforms[idx].forward(tuple_x, logpx)
             else:
-                x = self.transforms[idx].forward(x)
+                tuple_x = self.transforms[idx].forward(tuple_x)
             if self.factor_out and (idx < len(self.transforms) - 1):
-                d = x.size(1) // 2
-                x, f = x[:, :d], x[:, d:]
+                d = tuple_x[1].size(1) // 2
+                tuple_x[1], f = tuple_x[1][:, :d], tuple_x[1][:, d:]
                 out.append(f)
 
             # Handle classification.
@@ -258,8 +281,9 @@ class ResidualFlow(nn.Module):
                 if self.factor_out:
                     class_outs.append(self.classification_heads[idx](f))
                 else:
-                    class_outs.append(self.classification_heads[idx](x))
+                    class_outs.append(self.classification_heads[idx](tuple_x))
 
+        lifted_coords, x,lifted_mask = tuple_x[:]
         out.append(x)
         out = torch.cat([o.view(o.size()[0], -1) for o in out], 1)
         output = out if logpx is None else (out, logpx)
@@ -355,9 +379,9 @@ class ResidualFlow(nn.Module):
         return bits_per_dim
 
     def compute_loss(self, args, x, beta=1.0, do_test=False):
-        if do_test and not args.task == 'hybrid':
-            # ipdb.set_trace()
-            return self.compute_avg_test_loss(args, self.group_action_type, x)
+        # if do_test and not args.task == 'hybrid':
+            # # ipdb.set_trace()
+            # return self.compute_avg_test_loss(args, self.group_action_type, x)
         bits_per_dim, logits_tensor = torch.zeros(1).to(x), torch.zeros(args.n_classes).to(x)
         logpz, delta_logp = torch.zeros(1).to(x), torch.zeros(1).to(x)
 
@@ -434,6 +458,7 @@ class StackediResBlocks(layers.SequentialFlow):
 
     def __init__(
         self,
+        group,
         initial_size,
         idim,
         squeeze=True,
@@ -464,10 +489,20 @@ class StackediResBlocks(layers.SequentialFlow):
         grad_in_forward=False,
         first_resblock=False,
         learn_p=False,
+        nbhd=25,
+        ds_frac=1.0,
+        fill=0.1,
+        bn=True,
+        mean=True,
     ):
 
         chain = []
-
+        self.nbhd = nbhd
+        self.ds_frac = ds_frac
+        self.fill = fill
+        self.bn = bn
+        self.mean = mean
+        self.group = group
         # Parse vnorms
         ps = []
         for p in vnorms:
@@ -493,7 +528,7 @@ class StackediResBlocks(layers.SequentialFlow):
                 return layers.InvertibleConv2d(initial_size[0])
 
         def _lipschitz_layer(fc):
-            return base_layers.get_linear if fc else base_layers.get_conv2d
+            return base_layers.get_lie_conv2d
 
         def _resblock(initial_size, fc, idim=idim, first_resblock=False):
             if fc:
@@ -534,28 +569,41 @@ class StackediResBlocks(layers.SequentialFlow):
                     if batchnorm: nnet.append(layers.MovingBatchNorm2d(initial_size[0]))
                     nnet.append(ACT_FNS[activation_fn](False))
                 nnet.append(
-                    _lipschitz_layer(fc)(
-                        initial_size[0], idim, ks[0], 1, ks[0] // 2, coeff=coeff, n_iterations=n_lipschitz_iters,
-                        domain=_domains[0], codomain=_codomains[0], atol=sn_atol, rtol=sn_rtol
-                    )
+                    _lipschitz_layer(fc)( initial_size[0], idim, self.nbhd,
+                                         self.ds_frac, self.bn, activation_fn,
+                                         self.mean, self.group, self.fill,
+                                         coeff=coeff,
+                                         n_iterations=n_lipschitz_iters,
+                                         domain=_domains[0],
+                                         codomain=_codomains[0], atol=sn_atol,
+                                         rtol=sn_rtol)
                 )
                 if batchnorm: nnet.append(layers.MovingBatchNorm2d(idim))
                 nnet.append(ACT_FNS[activation_fn](True))
                 for i, k in enumerate(ks[1:-1]):
                     nnet.append(
-                        _lipschitz_layer(fc)(
-                            idim, idim, k, 1, k // 2, coeff=coeff, n_iterations=n_lipschitz_iters,
-                            domain=_domains[i + 1], codomain=_codomains[i + 1], atol=sn_atol, rtol=sn_rtol
-                        )
+                        _lipschitz_layer(fc)( idim, idim, self.nbhd,
+                                             self.ds_frac, self.bn,
+                                             activation_fn, self.mean,
+                                             self.group, self.fill,
+                                             coeff=coeff,
+                                             n_iterations=n_lipschitz_iters,
+                                             domain=_domains[i+1],
+                                             codomain=_codomains[i+1],
+                                             atol=sn_atol, rtol=sn_rtol)
                     )
                     if batchnorm: nnet.append(layers.MovingBatchNorm2d(idim))
                     nnet.append(ACT_FNS[activation_fn](True))
                 if dropout: nnet.append(nn.Dropout2d(dropout, inplace=True))
                 nnet.append(
-                    _lipschitz_layer(fc)(
-                        idim, initial_size[0], ks[-1], 1, ks[-1] // 2, coeff=coeff, n_iterations=n_lipschitz_iters,
-                        domain=_domains[-1], codomain=_codomains[-1], atol=sn_atol, rtol=sn_rtol
-                    )
+                    _lipschitz_layer(fc)( idim, initial_size[0], self.nbhd,
+                                         self.ds_frac, self.bn, activation_fn,
+                                         self.mean, self.group, self.fill,
+                                         coeff=coeff,
+                                         n_iterations=n_lipschitz_iters,
+                                         domain=_domains[-1],
+                                         codomain=_codomains[-1], atol=sn_atol,
+                                         rtol=sn_rtol)
                 )
                 if batchnorm: nnet.append(layers.MovingBatchNorm2d(initial_size[0]))
                 return layers.iResBlock(
@@ -567,7 +615,7 @@ class StackediResBlocks(layers.SequentialFlow):
                     neumann_grad=neumann_grad,
                     grad_in_forward=grad_in_forward,
                 )
-
+        ipdb.set_trace()
         if init_layer is not None: chain.append(init_layer)
         if first_resblock and actnorm: chain.append(_actnorm(initial_size, fc))
         if first_resblock and fc_actnorm: chain.append(_actnorm(initial_size, True))

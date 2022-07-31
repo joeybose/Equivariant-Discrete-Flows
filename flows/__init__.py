@@ -68,4 +68,12 @@ def create_flow(arg_parse: argparse.Namespace, model_type: str, *args: Any, **kw
             n_classes=arg_parse.n_classes,
             block_type=arg_parse.block,
         ).to(arg_parse.dev)
+
+    if (arg_parse.resume is not None):
+        checkpt = torch.load(arg_parse.resume)
+        sd = {k: v for k, v in checkpt['state_dict'].items() if 'last_n_samples' not in k}
+        state = flow_model.state_dict()
+        state.update(sd)
+        flow_model.load_state_dict(state, strict=True)
+        del checkpt
     return flow_model

@@ -37,7 +37,6 @@ criterion = torch.nn.CrossEntropyLoss()
 
 def do_train_epoch(args, epoch, flow_model, optim, train_loader, meters):
     flow_model.train()
-    # ipdb.set_trace()
     total = 0
     correct = 0
     end = time.time()
@@ -61,7 +60,6 @@ def do_train_epoch(args, epoch, flow_model, optim, train_loader, meters):
             # flow_model.update_lipschitz(args.n_lipschitz_iters)
 
         beta = beta = min(1, global_itr / args.annealing_iters) if args.annealing_iters > 0 else 1.
-        ipdb.set_trace()
         bpd, logits, logpz, neg_delta_logp, z = flow_model.compute_loss(args, x, beta=beta)
 
         if bpd < 0:
@@ -262,13 +260,12 @@ def train_flow(args, flow, optim, scheduler, train_loader, test_loader):
     lipschitz_constants = []
     flow.eval()
     last_checkpoints = None
-    # resume_path = utils.save_checkpoint({'state_dict': flow.state_dict(),
-                                         # 'optimizer_state_dict':
-                                         # optim.state_dict(), 'args': args,
-                                         # 'test_bpd': torch.tensor([0]), },
-                                        # os.path.join(args.save, 'models'), 0,
-                                        # last_checkpoints, num_checkpoints=5)
-
+    resume_path = utils.save_checkpoint({'state_dict': flow.state_dict(),
+                                         'optimizer_state_dict': optim.state_dict(), 'args': args,
+                                         'test_bpd': torch.tensor([0]), },
+                                        os.path.join(args.save, 'models', args.group),
+                                        args.model_type, epoch, last_checkpoints,
+                                        num_checkpoints=5)
 
     best_test_bpd = math.inf
 
@@ -289,12 +286,10 @@ def train_flow(args, flow, optim, scheduler, train_loader, test_loader):
 
         if test_bpd < best_test_bpd:
             resume_path = utils.save_checkpoint({'state_dict': flow.state_dict(),
-                                                 'optimizer_state_dict':
-                                                 optim.state_dict(), 'args': args,
+                                                 'optimizer_state_dict': optim.state_dict(), 'args': args,
                                                  'test_bpd': torch.tensor([0]), },
-                                                os.path.join(args.save, 'models'),
-                                                args.model_type, epoch,
-                                                last_checkpoints,
+                                                os.path.join(args.save, 'models', args.group),
+                                                args.model_type, epoch, last_checkpoints,
                                                 num_checkpoints=5)
         # if args.scheduler and scheduler is not None:
             # scheduler.step()
